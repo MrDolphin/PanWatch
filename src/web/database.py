@@ -78,6 +78,39 @@ def _has_table(conn, table: str) -> bool:
         return False
 
 
+def _drop_dangling_ai_provider_fk(conn, table: str) -> None:
+    """删掉指向已不存在的 ai_providers 表的悬空外键列。
+
+    背景: _migrate_old_providers 把 ai_providers 表删了,但
+    agent_configs.ai_provider_id / stock_agents.ai_provider_id 这两列上的 FK 没清。
+    SQLite 默认 PRAGMA foreign_keys 不开,所以历史 INSERT 没事;但某些路径下
+    (比如 INSERT ... RETURNING + SQLAlchemy 校验)会报 "no such table: ai_providers"。
+
+    SQLite 3.35+ 支持 ALTER TABLE DROP COLUMN,直接 drop 即可。
+    """
+    if not _has_column(conn, table, "ai_provider_id"):
+        return
+    # ai_providers 还存在的话先不动(让 _migrate_old_providers 先迁移)
+    if _has_table(conn, "ai_providers"):
+        return
+    try:
+        conn.execute(text(f"ALTER TABLE {table} DROP COLUMN ai_provider_id"))
+        conn.commit()
+        logger.info(f"已清理 {table}.ai_provider_id 悬空外键列")
+    except Exception as e:
+        # 老 SQLite 不支持 DROP COLUMN — fallback 留 schema 不动,改用 PRAGMA foreign_keys=OFF
+        # (本进程级别,不影响其他业务,因为 ai_providers 不存在,FK 永远无效)
+        logger.warning(
+            f"DROP COLUMN {table}.ai_provider_id 失败 (SQLite < 3.35?): {e}; "
+            f"将通过 PRAGMA foreign_keys=OFF 绕开"
+        )
+        try:
+            conn.execute(text("PRAGMA foreign_keys = OFF"))
+            conn.commit()
+        except Exception:
+            pass
+
+
 def _backup_db_before_migration() -> None:
     """Create a timestamped sqlite backup before versioned migrations."""
     if not os.path.exists(DB_PATH):
@@ -178,6 +211,13 @@ def _migrate(engine):
             if not _has_column(conn, table, column):
                 conn.execute(text(sql))
                 conn.commit()
+
+        # 清理 legacy 悬空外键:agent_configs.ai_provider_id / stock_agents.ai_provider_id
+        # 这两列原本 REFERENCES ai_providers(id),但 _migrate_old_providers 已经把
+        # ai_providers 表删了。如果保留 FK,新 INSERT 会触发 SQLite "no such table" 错误
+        # (因为 SQLite 在 INSERT 时校验 FK 引用的表是否存在)。
+        _drop_dangling_ai_provider_fk(conn, "agent_configs")
+        _drop_dangling_ai_provider_fk(conn, "stock_agents")
 
         # 初始化排序字段（仅对未初始化数据）
         if _has_column(conn, "stocks", "sort_order"):

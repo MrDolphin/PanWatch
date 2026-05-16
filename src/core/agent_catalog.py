@@ -127,5 +127,25 @@ AGENT_SEED_SPECS: tuple[AgentSeedSpec, ...] = (
         replaced_by="intraday_monitor,daily_report,premarket_outlook",
         display_order=120,
     ),
+    AgentSeedSpec(
+        name="tradingagents",
+        display_name="TradingAgents 深度分析",
+        description="多 Agent 投资决策框架(基本面/情绪/新闻/技术 + 看多看空辩论 + 风控 + PM)。"
+        "单次 3-5 分钟、~$0.05 (deepseek-chat)。需手动触发,默认关闭。",
+        enabled=False,
+        schedule="",
+        execution_mode="single",
+        kind=AGENT_KIND_WORKFLOW,
+        visible=True,
+        display_order=40,
+        config={
+            "analyst_types": ["market", "social", "news", "fundamentals"],
+            "debate_rounds": 1,
+            "monthly_budget_usd": 10.0,
+            "over_budget_action": "reject",
+            "cache_ttl_hours": 12,
+            "output_language": "Chinese",
+        },
+    ),
 )
 

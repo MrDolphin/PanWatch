@@ -20,8 +20,9 @@ class EastmoneyEventsProvider(EventsProvider):
 
     def __init__(self, config: dict | None = None):
         super().__init__(config=config)
+        cfg = self.config or {}
         self._collector = EastMoneyEventsCollector(
-            timeout=(self.config or {}).get("timeout", 10.0),
+            timeout_s=cfg.get("timeout_s", cfg.get("timeout", 10.0)),
         )
 
     async def fetch(self, req: ProviderRequest) -> ProviderResponse:

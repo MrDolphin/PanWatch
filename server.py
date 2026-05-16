@@ -40,6 +40,7 @@ from src.agents.news_digest import NewsDigestAgent
 from src.agents.chart_analyst import ChartAnalystAgent
 from src.agents.intraday_monitor import IntradayMonitorAgent
 from src.agents.premarket_outlook import PremarketOutlookAgent
+from src.agents.tradingagents import TradingAgentsAgent
 
 logger = logging.getLogger(__name__)
 
@@ -894,6 +895,7 @@ AGENT_REGISTRY: dict[str, type] = {
     "news_digest": NewsDigestAgent,
     "chart_analyst": ChartAnalystAgent,
     "intraday_monitor": IntradayMonitorAgent,
+    "tradingagents": TradingAgentsAgent,
 }
 
 
@@ -1094,10 +1096,11 @@ async def trigger_agent_for_stock(
     bypass_throttle: bool = False,
     bypass_market_hours: bool = False,
     suppress_notify: bool = False,
+    trace_id: str | None = None,
 ) -> dict:
     """手动触发 Agent 执行（单只股票）"""
     start = time.monotonic()
-    trace_id = f"man-{agent_name}-{stock.symbol}-{int(time.time() * 1000)}"
+    trace_id = trace_id or f"man-{agent_name}-{stock.symbol}-{int(time.time() * 1000)}"
     agent_cls = AGENT_REGISTRY.get(agent_name)
     if not agent_cls:
         raise ValueError(f"Agent {agent_name} 未注册实际实现")
@@ -1136,13 +1139,23 @@ async def trigger_agent_for_stock(
         model_label=model_label,
         suppress_notify=suppress_notify,
     )
+    # 暴露 trace_id 给 agent(供 TradingAgents 进度反馈使用)。
+    # AgentContext 不强制声明此字段,通过 setattr 注入,其他 agent 不受影响。
+    setattr(context, "_trace_id", trace_id)
 
-    # 创建 agent，支持 intraday_monitor 的手动触发参数
+    # 创建 agent，支持手动触发参数。TradingAgents 等新 agent 从 AgentConfig 读 config。
     if agent_name == "intraday_monitor":
         agent = agent_cls(
             bypass_throttle=bypass_throttle,
             bypass_market_hours=bypass_market_hours,
         )
+    elif agent_name == "tradingagents":
+        # 从 AgentConfig.config 读取实例化参数
+        agent_kwargs = get_agent_config(agent_name) or {}
+        try:
+            agent = agent_cls(**agent_kwargs)
+        except TypeError:
+            agent = agent_cls()
     else:
         agent = agent_cls()
 

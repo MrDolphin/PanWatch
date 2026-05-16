@@ -15,3 +15,9 @@ uvicorn>=0.24.0
 sqlalchemy>=2.0.0
 playwright==1.57.0
 PyJWT>=2.8.0
+
+# 深度分析 — TradingAgents (多 Agent 投资决策框架, 76k star)。
+# 不在 PyPI,用 git+ URL 安装。会拉 langchain/langgraph/yfinance 等较重依赖
+# (~115 个包,首次安装 2-5 分钟)。
+# 用户启用「TradingAgents 深度分析」Agent 时才会真正调用它;不启用零开销。
+tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@main

@@ -407,6 +407,10 @@ async def trigger_stock_agent(
     )
 
     from server import trigger_agent_for_stock
+    import time as _time
+
+    # 预生成 trace_id,返回给前端用于轮询进度
+    trace_id = f"man-{agent_name}-{trigger_stock.symbol}-{int(_time.time() * 1000)}"
 
     if not wait:
         # 异步模式：后台执行，立即返回
@@ -421,6 +425,7 @@ async def trigger_stock_agent(
                     bypass_throttle=bypass_throttle,
                     bypass_market_hours=bypass_market_hours,
                     suppress_notify=suppress_notify,
+                    trace_id=trace_id,
                 ))
                 logger.info(f"Agent {agent_name} 后台执行完成 - {trigger_stock.symbol}")
             except Exception:
@@ -432,7 +437,7 @@ async def trigger_stock_agent(
             daemon=True,
         )
         t.start()
-        return {"queued": True, "message": "已提交后台执行"}
+        return {"queued": True, "trace_id": trace_id, "message": "已提交后台执行"}
 
     # 同步模式：等待结果返回
     try:
@@ -443,10 +448,12 @@ async def trigger_stock_agent(
             bypass_throttle=bypass_throttle,
             bypass_market_hours=bypass_market_hours,
             suppress_notify=suppress_notify,
+            trace_id=trace_id,
         )
         logger.info(f"Agent {agent_name} 执行完成 - {trigger_stock.symbol}")
         return {
             "result": result,
+            "trace_id": trace_id,
             "code": int(result.get("code", 0)),
             "success": bool(result.get("success", True)),
             "message": result.get("message", "ok"),

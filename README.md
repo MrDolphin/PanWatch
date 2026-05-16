@@ -24,6 +24,15 @@
 - **AI 原生** — 不是简单的指标堆砌，而是让 AI 理解你的持仓、风格和目标
 - **开箱即用** — Docker 一键部署，5 分钟完成配置
 
+## 🧠 深度分析 (NEW · TradingAgents 集成)
+
+接入 [TradingAgents](https://github.com/TauricResearch/TradingAgents)(76k star)多 Agent 投资决策框架,在持仓页点 🧠 图标即可触发:
+
+- **4 类分析师**(技术 / 情绪 / 新闻 / 基本面) → **看多看空辩论** → **风控** → **PM 整合**
+- 3-5 分钟出完整推理链,推送同步到 Telegram / 微信 / 钉钉
+- 默认 deepseek-chat,单次 ~$0.05;月度预算可控
+- 配置指南: [`.docs/tradingagents/USER_GUIDE.md`](.docs/tradingagents/USER_GUIDE.md)
+
 ## 核心功能
 
 <details>

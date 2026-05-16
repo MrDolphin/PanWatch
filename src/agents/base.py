@@ -205,6 +205,9 @@ class BaseAgent(ABC):
         # Intraday uses its own per-stock throttle.
         elif self.name == "intraday_monitor":
             default = 30
+        elif self.name == "tradingagents":
+            # 深度分析单次成本高,同标的 12 小时内不重复推送
+            default = 12 * 60
         else:
             default = 60
 

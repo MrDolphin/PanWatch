@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from src.web.database import get_db
-from src.web.models import AgentConfig, AgentRun
+from src.web.models import AgentConfig, AgentRun, LogEntry
 from src.core.schedule_parser import preview_schedule
 from src.core.schedule_parser import count_runs_within
 from src.config import Settings
@@ -386,6 +386,79 @@ async def trigger_agent_endpoint(
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, f"Agent 执行失败: {e}")
+
+
+@router.get("/runs/{trace_id}/progress")
+def get_run_progress(trace_id: str, db: Session = Depends(get_db)):
+    """读取一次 agent 运行的进度。
+
+    适用 TradingAgents 等长耗时(3-5 分钟)的 agent。从 log_entries 表里
+    查 event=ta_progress + 同 trace_id 的日志,聚合成阶段进度。
+
+    返回:
+    {
+        "trace_id": ...,
+        "status": "running" | "success" | "failed" | "not_found",
+        "current_stage": ...,
+        "completed_stages": [...],
+        "elapsed_sec": float,
+        "total_cost_usd": float,
+        "stages": [{"name": ..., "status": "pending"|"running"|"done"}, ...],
+        "run": {  # 最终 AgentRun(已完成时)
+            "status": ..., "result": ..., "error": ..., "duration_ms": ...
+        }
+    }
+    """
+    from src.agents.tradingagents.progress import aggregate_progress
+
+    if not trace_id or len(trace_id) > 64:
+        raise HTTPException(400, "无效的 trace_id")
+
+    logs = (
+        db.query(LogEntry)
+        .filter(LogEntry.trace_id == trace_id, LogEntry.event == "ta_progress")
+        .order_by(LogEntry.id.asc())
+        .limit(500)
+        .all()
+    )
+    log_dicts = [
+        {
+            "timestamp": _format_datetime(le.timestamp),
+            "level": le.level,
+            "message": le.message,
+            "tags": le.tags or {},
+        }
+        for le in logs
+    ]
+
+    progress = aggregate_progress(log_dicts)
+
+    run = (
+        db.query(AgentRun)
+        .filter(AgentRun.trace_id == trace_id)
+        .order_by(AgentRun.id.desc())
+        .first()
+    )
+
+    if run:
+        status = run.status
+        progress["run"] = {
+            "agent_name": run.agent_name,
+            "status": run.status,
+            "result": (run.result or "")[:1000],
+            "error": (run.error or "")[:500],
+            "duration_ms": run.duration_ms,
+            "model_label": run.model_label,
+            "notify_sent": run.notify_sent,
+        }
+    elif log_dicts:
+        status = "running"
+    else:
+        status = "not_found"
+
+    progress["trace_id"] = trace_id
+    progress["status"] = status
+    return progress
 
 
 @router.get("/{agent_name}/history", response_model=list[AgentRunResponse])

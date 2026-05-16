@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3 } from 'lucide-react'
+import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3, Brain } from 'lucide-react'
 import { fetchAPI, stocksApi, type AIService, type NotifyChannel } from '@panwatch/api'
 import { useLocalStorage } from '@/lib/utils'
 import { SuggestionBadge, type SuggestionInfo, type KlineSummary } from '@panwatch/biz-ui/components/suggestion-badge'
@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectLabel, SelectItem } from '@panwatch/base-ui/components/ui/select'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import StockInsightModal from '@panwatch/biz-ui/components/stock-insight-modal'
+import { DeepAnalysisModal } from '@panwatch/biz-ui/components/deep-analysis-modal'
 import StockPriceAlertPanel from '@panwatch/biz-ui/components/stock-price-alert-panel'
 
 interface AgentResult {
@@ -422,6 +423,16 @@ export default function StocksPage() {
 
   // Agent dialog
   const [agentDialogStock, setAgentDialogStock] = useState<Stock | null>(null)
+
+  // 深度分析(TradingAgents)弹窗
+  const [deepAnalysisTarget, setDeepAnalysisTarget] = useState<{
+    stockId: number
+    symbol: string
+    name: string
+  } | null>(null)
+  const openDeepAnalysis = useCallback((stockId: number, symbol: string, name: string) => {
+    setDeepAnalysisTarget({ stockId, symbol, name })
+  }, [])
   const [triggeringAgent, setTriggeringAgent] = useState<string | null>(null)
   const [schedulePreviewCache, setSchedulePreviewCache] = useState<Record<string, SchedulePreview | { error: string }>>({})
   const [schedulePreviewLoading, setSchedulePreviewLoading] = useState<Record<string, boolean>>({})
@@ -2080,6 +2091,7 @@ export default function StocksPage() {
                                         onChanged={loadPriceAlertSummaries}
                                       />
                                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openNewsDialog(pos.name)} title="相关资讯"><Newspaper className="w-3 h-3" /></Button>
+                                      <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-primary" title="深度分析(TradingAgents)" onClick={() => openDeepAnalysis(pos.stock_id, pos.symbol, pos.name)}><Brain className="w-3 h-3" /></Button>
                                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openPositionDialog(account.id, pos)}><Pencil className="w-3 h-3" /></Button>
                                       <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeletePosition(pos.id)}><Trash2 className="w-3 h-3" /></Button>
                                     </div>
@@ -2245,6 +2257,7 @@ export default function StocksPage() {
                                     onChanged={loadPriceAlertSummaries}
                                   />
                                   <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openNewsDialog(pos.name)}><Newspaper className="w-3 h-3" /></Button>
+                                  <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-primary" title="深度分析(TradingAgents)" onClick={() => openDeepAnalysis(pos.stock_id, pos.symbol, pos.name)}><Brain className="w-3 h-3" /></Button>
                                   <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openPositionDialog(account.id, pos)}><Pencil className="w-3 h-3" /></Button>
                                   <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeletePosition(pos.id)}><Trash2 className="w-3 h-3" /></Button>
                                 </div>
@@ -2500,6 +2513,17 @@ export default function StocksPage() {
         stockName={insightName}
         hasPosition={insightHasPosition}
       />
+
+      {/* TradingAgents 深度分析弹窗 */}
+      {deepAnalysisTarget && (
+        <DeepAnalysisModal
+          open={!!deepAnalysisTarget}
+          onOpenChange={(open) => { if (!open) setDeepAnalysisTarget(null) }}
+          stockId={deepAnalysisTarget.stockId}
+          stockSymbol={deepAnalysisTarget.symbol}
+          stockName={deepAnalysisTarget.name}
+        />
+      )}
 
       {/* Remove Watchlist Dialog */}
       <Dialog open={!!removeWatchStock} onOpenChange={(open) => { if (!open) setRemoveWatchStock(null) }}>
