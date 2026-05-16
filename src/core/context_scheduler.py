@@ -38,12 +38,14 @@ class ContextMaintenanceScheduler:
 
     async def _evaluate_job(self):
         if self._evaluating:
-            logger.info("[上下文维护] 上一轮后验评估仍在执行，跳过本轮")
+            logger.debug("[上下文维护] 上一轮后验评估仍在执行，跳过本轮")
             return
         self._evaluating = True
         try:
             stats = await asyncio.to_thread(evaluate_pending_prediction_outcomes)
-            logger.info(
+            level = logging.INFO if stats.get("evaluated", 0) else logging.DEBUG
+            logger.log(
+                level,
                 "[上下文维护] 后验评估完成: pending=%s eligible=%s evaluated=%s skipped_not_due=%s skipped_no_price=%s",
                 stats.get("total_pending", 0),
                 stats.get("eligible", 0),
@@ -57,7 +59,9 @@ class ContextMaintenanceScheduler:
                 snapshot_days=45,
                 limit=500,
             )
-            logger.info(
+            level = logging.INFO if cand_stats.get("evaluated", 0) else logging.DEBUG
+            logger.log(
+                level,
                 "[上下文维护] 候选后验评估完成: total=%s eligible=%s evaluated=%s skipped_not_due=%s skipped_no_price=%s",
                 cand_stats.get("total_candidates", 0),
                 cand_stats.get("eligible", 0),
@@ -71,7 +75,9 @@ class ContextMaintenanceScheduler:
                 snapshot_days=60,
                 limit=1200,
             )
-            logger.info(
+            level = logging.INFO if strategy_stats.get("evaluated", 0) else logging.DEBUG
+            logger.log(
+                level,
                 "[上下文维护] 策略后验评估完成: total=%s eligible=%s evaluated=%s skipped_not_due=%s skipped_no_price=%s",
                 strategy_stats.get("total_signals", 0),
                 strategy_stats.get("eligible", 0),
@@ -86,7 +92,9 @@ class ContextMaintenanceScheduler:
                 alpha=0.35,
                 regime="default",
             )
-            logger.info(
+            level = logging.INFO if rebalance.get("changed", 0) else logging.DEBUG
+            logger.log(
+                level,
                 "[上下文维护] 策略调权完成: changed=%s checked=%s skipped_low_sample=%s",
                 rebalance.get("changed", 0),
                 rebalance.get("checked", 0),
@@ -99,7 +107,7 @@ class ContextMaintenanceScheduler:
 
     async def _cleanup_job(self):
         if self._cleaning:
-            logger.info("[上下文维护] 上一轮清理仍在执行，跳过本轮")
+            logger.debug("[上下文维护] 上一轮清理仍在执行，跳过本轮")
             return
         self._cleaning = True
         try:
@@ -110,7 +118,10 @@ class ContextMaintenanceScheduler:
                 context_run_days=self.snapshot_retention_days,
                 outcome_days=self.outcome_retention_days,
             )
-            logger.info("[上下文维护] 清理完成: %s", deleted)
+            # deleted 是 dict,任一字段 >0 就是有清理动作
+            has_work = bool(deleted and any(deleted.values()) if isinstance(deleted, dict) else deleted)
+            level = logging.INFO if has_work else logging.DEBUG
+            logger.log(level, "[上下文维护] 清理完成: %s", deleted)
         except Exception as e:
             logger.exception(f"[上下文维护] 清理异常: {e}")
         finally:
@@ -153,7 +164,7 @@ class ContextMaintenanceScheduler:
     async def _refresh_opportunities_job(self):
         """定时刷新机会池（候选 + 策略信号）。"""
         if self._refreshing:
-            logger.info("[上下文维护] 上一轮机会刷新仍在执行，跳过本轮")
+            logger.debug("[上下文维护] 上一轮机会刷新仍在执行，跳过本轮")
             return
         self._refreshing = True
         try:
@@ -165,7 +176,9 @@ class ContextMaintenanceScheduler:
                 max_kline_symbols=60,
                 limit_candidates=2000,
             )
-            logger.info(
+            level = logging.INFO if result.get("count", 0) else logging.DEBUG
+            logger.log(
+                level,
                 "[上下文维护] 机会自动刷新完成: snapshot_date=%s count=%s",
                 result.get("snapshot_date", ""),
                 result.get("count", 0),

@@ -20,15 +20,19 @@ class PriceAlertScheduler:
 
     async def _scan_job(self):
         if self._running:
-            logger.info("[价格提醒] 上轮扫描仍在执行，跳过本轮")
+            logger.debug("[价格提醒] 上轮扫描仍在执行，跳过本轮")
             return
         self._running = True
         try:
             result = await ENGINE.scan_once()
-            logger.info(
+            triggered = result.get("triggered", 0)
+            # 实际触发了告警才是业务事件,否则只是心跳。
+            level = logging.INFO if triggered else logging.DEBUG
+            logger.log(
+                level,
                 "[价格提醒] 扫描完成: rules=%s triggered=%s skipped=%s",
                 result.get("total_rules", 0),
-                result.get("triggered", 0),
+                triggered,
                 result.get("skipped", 0),
             )
         except Exception as e:

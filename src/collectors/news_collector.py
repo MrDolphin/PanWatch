@@ -118,7 +118,7 @@ class XueqiuNewsCollector(BaseNewsCollector):
             if isinstance(result, list):
                 all_news.extend(result)
 
-        logger.info(f"雪球新闻采集到 {len(all_news)} 条")
+        logger.debug(f"雪球新闻采集到 {len(all_news)} 条")
         return all_news
 
     async def _fetch_for_symbol(self, client: httpx.AsyncClient, symbol: str, since: datetime | None) -> list[NewsItem]:
@@ -307,7 +307,7 @@ class EastMoneyStockNewsCollector(BaseNewsCollector):
 
         # 缓存结果
         _set_cached(cache_key, unique_news)
-        logger.info(f"东方财富个股新闻采集到 {len(unique_news)} 条")
+        logger.debug(f"东方财富个股新闻采集到 {len(unique_news)} 条")
         if since:
             return [n for n in unique_news if n.publish_time >= since]
         return unique_news
@@ -497,7 +497,7 @@ class EastMoneyNewsCollector(BaseNewsCollector):
 
             # 缓存结果（缓存维度不包含 since，避免“空结果污染缓存”）
             _set_cached(cache_key, result)
-            logger.info(f"东方财富公告采集到 {len(result)} 条")
+            logger.debug(f"东方财富公告采集到 {len(result)} 条")
             if since:
                 return [n for n in result if n.publish_time >= since]
             return result

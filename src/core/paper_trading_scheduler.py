@@ -19,16 +19,22 @@ class PaperTradingScheduler:
 
     async def _scan_job(self):
         if self._running:
-            logger.info("[模拟盘] 上轮扫描仍在执行，跳过本轮")
+            logger.debug("[模拟盘] 上轮扫描仍在执行，跳过本轮")
             return
         self._running = True
         try:
             result = await ENGINE.scan_once()
-            logger.info(
+            opened = result.get("opened", 0)
+            closed = result.get("closed", 0)
+            status = result.get("status", "?")
+            # 有实际开/平仓才是业务事件,否则只是心跳。
+            level = logging.INFO if (opened or closed) else logging.DEBUG
+            logger.log(
+                level,
                 "[模拟盘] 扫描完成: opened=%s closed=%s status=%s",
-                result.get("opened", 0),
-                result.get("closed", 0),
-                result.get("status", "?"),
+                opened,
+                closed,
+                status,
             )
         except Exception as e:
             logger.exception(f"[模拟盘] 扫描异常: {e}")

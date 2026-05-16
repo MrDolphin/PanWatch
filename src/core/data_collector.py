@@ -115,11 +115,12 @@ class DataCollectorManager:
         )
         self.logs.append(log)
 
-        # 同时输出到 logger
+        # 同时输出到 logger:error 走 WARNING；start/success 是底层心跳,降到 DEBUG。
+        # UI 日志板始终从 self.logs 读完整记录,不受这里影响。
         if action == "error":
             logger.warning(f"[{source_name}] {message}")
         else:
-            logger.info(f"[{source_name}] {message}")
+            logger.debug(f"[{source_name}] {message}")
 
     def get_logs(self) -> list[dict]:
         """获取日志（用于 UI 展示）"""
