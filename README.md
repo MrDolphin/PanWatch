@@ -146,16 +146,20 @@ docker-compose up -d
 **环境要求**：Python 3.10+ / Node.js 18+ / pnpm
 
 ```bash
-# 后端
+# 一键开发（推荐）
+make dev-api          # 启动后端（自动 venv+依赖，监听 :8000）
+make dev-web          # 启动前端（自动 pnpm install，监听 :5183）
+
+# 或手动
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-python server.py
+python server.py                              # 后端 :8000
 
-# 前端（新终端）
-cd frontend && pnpm install && pnpm dev
+cd frontend && pnpm install && pnpm dev       # 前端 :5183
 ```
 
-前端运行在 `http://localhost:5173`，自动代理 API 到后端。
+前端 dev server 跑在 `http://localhost:5183`，并把 `/api` 代理到 `127.0.0.1:8000`。
+前端用 `:5183` 而非默认 `:5173`，是为了和 BeeCount-Cloud 等本地常驻前端错开。
 
 </details>
 

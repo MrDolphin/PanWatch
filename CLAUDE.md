@@ -12,9 +12,11 @@ PanWatch (盯盘侠) is a self-hosted AI stock assistant with real-time market m
 # Backend
 python server.py                    # Start backend (port 8000, serves frontend static too)
 pip install -r requirements.txt     # Install Python deps
+make dev-api                        # 一键: venv + 依赖 + uvicorn --reload (port 8000)
 
 # Frontend
-cd frontend && pnpm install && pnpm dev      # Dev server (port 5173)
+cd frontend && pnpm install && pnpm dev      # Dev server (port 5183)
+make dev-web                                  # 一键: pnpm install + dev (port 5183)
 cd frontend && pnpm build                     # Production build (outputs to frontend/dist)
 
 # Tests

@@ -13,8 +13,8 @@
 - `build.sh`, `Dockerfile` — Build frontend and container images.
 
 ## Build, Test, and Development Commands
-- Backend (dev): `python -m venv venv && source venv/bin/activate && pip install -r requirements.txt && python server.py`
-- Frontend (dev): `cd frontend && pnpm install && pnpm dev` (served on `http://localhost:5173`).
+- Backend (dev): `make dev-api`（自动 venv+依赖+uvicorn reload，监听 `:8000`）；或手动 `python server.py`。
+- Frontend (dev): `make dev-web`（自动 pnpm install+dev，served on `http://localhost:5183`）。
 - Frontend (build): `cd frontend && pnpm install --frozen-lockfile && pnpm build`.
 - Docker image: `./build.sh <version>` (copies `frontend/dist` to `./static` and builds image).
 - Run via Docker: `docker run -d -p 8000:8000 -v panwatch_data:/app/data sunxiao0721/panwatch:latest`.
