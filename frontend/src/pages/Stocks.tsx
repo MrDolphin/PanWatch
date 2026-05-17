@@ -2469,6 +2469,15 @@ export default function StocksPage() {
                         <Button
                           variant="ghost"
                           size="icon"
+                          className="h-7 w-7 hover:text-primary"
+                          title="深度分析(TradingAgents)"
+                          onClick={() => openDeepAnalysis(stock.id, stock.symbol, stock.name)}
+                        >
+                          <Brain className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
                           className="h-7 w-7"
                           onClick={() => openStockDetail(stock.symbol, stock.market, stock.name, false)}
                           title="详情"

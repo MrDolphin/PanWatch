@@ -25,6 +25,41 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def build_stock_metadata_context(
+    stock_symbol: str,
+    stock_name: str = "",
+    market: str = "CN",
+    current_price: float | None = None,
+    industry: str = "",
+) -> str:
+    """渲染标的元信息(公司名/市场/当前价),强制告诉 LLM 不要从 ticker 反查公司。
+
+    A 股 ticker(6 位数字)不在 yfinance/finnhub 数据集,LLM 不能从 ticker 反查
+    公司,必须显式告诉它"601127 = 赛力斯",否则会瞎编。
+
+    本段落注入到 past_context 顶部,PM 节点等读 past_context 的节点能看到。
+    """
+    if not stock_symbol:
+        return ""
+
+    market_label = {"CN": "中国 A 股", "HK": "港股", "US": "美股"}.get(market, market)
+    lines = [
+        "[Stock Metadata]",
+        f"- Ticker: {stock_symbol}",
+        f"- Company name: {stock_name or 'N/A'}",
+        f"- Market: {market_label}",
+    ]
+    if industry:
+        lines.append(f"- Industry: {industry}")
+    if current_price and current_price > 0:
+        lines.append(f"- Current price: {current_price:.2f}")
+    lines.append(
+        "- IMPORTANT: This is an A-share / HK / cross-market ticker. DO NOT guess the "
+        "company from the ticker code; always use the company name above."
+    )
+    return "\n".join(lines)
+
+
 def build_portfolio_context(
     portfolio,
     stock_symbol: str,

@@ -10,6 +10,8 @@ export interface TradingAgentsTriggerResult {
   queued?: boolean
   trace_id?: string
   message?: string
+  /** 后端幂等命中:已有在跑任务,trace_id 是现有任务的,不是新启的 */
+  deduplicated?: boolean
 }
 
 export interface AnalystReports {
@@ -53,6 +55,18 @@ export interface DeepAnalysisResult {
     trader_plan: string
     from_cache?: boolean
     notified?: boolean
+    toolkit_diagnostic?: {
+      summary: { hit: number; miss: number; passthrough: number; fallthrough?: number; error: number }
+      recent: Array<{
+        action?: string
+        method?: string
+        symbol?: string
+        chars?: number
+        snippet?: string
+        source?: string
+        reason?: string
+      }>
+    }
   }
   timestamp?: string
 }
@@ -65,15 +79,26 @@ export interface ProgressStage {
   cost_usd?: number
 }
 
+export interface ToolkitHit {
+  timestamp: string
+  action: string  // HIT / MISS / PASSTHROUGH / ERROR
+  method: string
+  symbol: string
+  reason?: string
+  chars?: number
+}
+
 export interface ProgressResponse {
   trace_id: string
-  status: 'not_found' | 'running' | 'success' | 'failed'
+  status: 'not_found' | 'running' | 'success' | 'failed' | 'stale'
   current_stage?: string | null
   completed_stages: string[]
   started_at?: string | null
   elapsed_sec: number
   total_cost_usd: number
   stages: ProgressStage[]
+  toolkit_summary?: { hit: number; miss: number; passthrough: number; fallthrough?: number; error: number }
+  toolkit_recent?: ToolkitHit[]
   run?: {
     agent_name: string
     status: string

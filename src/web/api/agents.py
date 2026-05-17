@@ -437,11 +437,65 @@ def find_running_for_stock(
         .first()
     )
 
+    # 没有 run 记录时,看最后日志距今 — 超过 STALE_THRESHOLD 视为僵尸 running
+    # (server 重启 / 工作线程死掉),前端可据此 reset 到 idle 允许重新分析
+    status = run.status if run else "running"
+    if status == "running":
+        last_ts = latest_log.timestamp
+        if last_ts and last_ts.tzinfo is None:
+            last_ts = last_ts.replace(tzinfo=timezone.utc)
+        if last_ts:
+            idle_sec = (datetime.now(timezone.utc) - last_ts).total_seconds()
+            if idle_sec > 300:  # 5 分钟无新进度 → stale
+                status = "stale"
+
     return {
         "trace_id": trace_id,
-        "status": run.status if run else "running",
+        "status": status,
         "last_activity_at": _format_datetime(latest_log.timestamp),
     }
+
+
+def find_active_tradingagents_trace(db: Session, stock_symbol: str) -> str | None:
+    """内部 helper:查该 symbol 是否有"真正在跑"的 tradingagents 任务。
+
+    给 trigger API 做幂等校验用。返回正在跑的 trace_id(或 None)。
+    - 有 AgentRun.status 终态(success/failed) → 不在跑(None)
+    - 5 分钟无新进度日志 → stale,不在跑(None)
+    - 否则 → 返回 trace_id
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+    latest_log = (
+        db.query(LogEntry)
+        .filter(
+            LogEntry.event == "ta_progress",
+            LogEntry.agent_name == "tradingagents",
+            LogEntry.timestamp >= cutoff,
+            LogEntry.trace_id.like(f"%-{stock_symbol}-%"),
+        )
+        .order_by(LogEntry.timestamp.desc())
+        .first()
+    )
+    if not latest_log or not latest_log.trace_id:
+        return None
+
+    trace_id = latest_log.trace_id
+    run = (
+        db.query(AgentRun)
+        .filter(AgentRun.trace_id == trace_id)
+        .order_by(AgentRun.id.desc())
+        .first()
+    )
+    if run and run.status in ("success", "failed"):
+        return None
+
+    last_ts = latest_log.timestamp
+    if last_ts and last_ts.tzinfo is None:
+        last_ts = last_ts.replace(tzinfo=timezone.utc)
+    if last_ts and (datetime.now(timezone.utc) - last_ts).total_seconds() > 300:
+        return None  # stale → 视为不在跑
+
+    return trace_id
 
 
 @router.get("/tradingagents/latest")
@@ -570,7 +624,10 @@ def get_run_progress(trace_id: str, db: Session = Depends(get_db)):
 
     logs = (
         db.query(LogEntry)
-        .filter(LogEntry.trace_id == trace_id, LogEntry.event == "ta_progress")
+        .filter(
+            LogEntry.trace_id == trace_id,
+            LogEntry.event.in_(["ta_progress", "ta_toolkit"]),
+        )
         .order_by(LogEntry.id.asc())
         .limit(500)
         .all()
@@ -580,12 +637,38 @@ def get_run_progress(trace_id: str, db: Session = Depends(get_db)):
             "timestamp": _format_datetime(le.timestamp),
             "level": le.level,
             "message": le.message,
+            "event": le.event,
             "tags": le.tags or {},
         }
         for le in logs
     ]
 
-    progress = aggregate_progress(log_dicts)
+    progress_logs = [d for d in log_dicts if d.get("event") == "ta_progress"]
+    progress = aggregate_progress(progress_logs)
+
+    # 工具调用诊断:汇总 5 类 action 次数 + 最近 50 条详情
+    # 港股转格式/兜底等场景归到对应基础类(HIT/PASSTHROUGH/ERROR),
+    # source 字段区分具体来源(yfinance/panwatch HK fallback/...)
+    toolkit_logs = [d for d in log_dicts if d.get("event") == "ta_toolkit"]
+    toolkit_summary = {"hit": 0, "miss": 0, "passthrough": 0, "fallthrough": 0, "error": 0}
+    toolkit_recent = []
+    for d in toolkit_logs:
+        tags = d.get("tags") or {}
+        action = (tags.get("action") or "").lower()
+        if action in toolkit_summary:
+            toolkit_summary[action] += 1
+        toolkit_recent.append({
+            "timestamp": d.get("timestamp"),
+            "action": tags.get("action"),
+            "method": tags.get("method"),
+            "symbol": tags.get("symbol"),
+            "reason": tags.get("reason"),
+            "chars": tags.get("chars"),
+            "snippet": tags.get("snippet"),
+            "source": tags.get("source"),
+        })
+    progress["toolkit_summary"] = toolkit_summary
+    progress["toolkit_recent"] = toolkit_recent[-50:]
 
     run = (
         db.query(AgentRun)
@@ -606,7 +689,18 @@ def get_run_progress(trace_id: str, db: Session = Depends(get_db)):
             "notify_sent": run.notify_sent,
         }
     elif log_dicts:
-        status = "running"
+        # 检测"僵尸 running":server 重启 / 工作线程死掉时,日志还在但任务已不在跑。
+        # 最后一条进度日志距今 > STALE_THRESHOLD 视为中断,前端可据此 reset 回 idle。
+        STALE_THRESHOLD_SEC = 300  # 5 分钟
+        last_log = logs[-1]  # logs 已 order_by id.asc(),末尾是最新
+        last_ts = last_log.timestamp
+        if last_ts is not None:
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=timezone.utc)
+            idle_sec = (datetime.now(timezone.utc) - last_ts).total_seconds()
+            status = "stale" if idle_sec > STALE_THRESHOLD_SEC else "running"
+        else:
+            status = "running"
     else:
         status = "not_found"
 

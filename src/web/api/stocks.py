@@ -410,8 +410,45 @@ async def trigger_stock_agent(
     from server import trigger_agent_for_stock
     import time as _time
 
+    # 幂等性兜底:TradingAgents 单次 3-5 分钟,前端误操作/双击可能并发触发同一标的。
+    # 后端先查"该 symbol 是否有真正在跑的 TA 任务",有则返回现有 trace_id(不启新任务)。
+    # force_refresh=true 时跳过去重,允许用户主动强制重跑(老任务自然终止,新 trace_id)。
+    if agent_name == "tradingagents" and not force_refresh:
+        from src.web.api.agents import find_active_tradingagents_trace
+        existing_trace = find_active_tradingagents_trace(db, trigger_stock.symbol)
+        if existing_trace:
+            logger.info(
+                f"[trigger 幂等] {trigger_stock.symbol} 已有在跑任务 trace={existing_trace},"
+                f"复用而非启新任务"
+            )
+            return {
+                "queued": False,
+                "trace_id": existing_trace,
+                "message": "已有正在执行的深度分析,返回现有任务进度",
+                "deduplicated": True,
+            }
+
     # 预生成 trace_id,返回给前端用于轮询进度
     trace_id = f"man-{agent_name}-{trigger_stock.symbol}-{int(_time.time() * 1000)}"
+
+    # 立刻写一条"任务已触发"进度日志,保证前端 polling 第一拍就能看到 running。
+    # 否则 trigger_agent_for_stock 内部要先 await agent.collect()(美股拉 yfinance 数据
+    # 可能 30s+),期间没有任何 ta_progress 日志 → 前端 progress 接口返回 not_found
+    # → 60s grace 过后前端 reset 到 idle,看起来像"进度卡死自动退回"。
+    if agent_name == "tradingagents":
+        try:
+            from src.core.log_context import log_context
+            with log_context(
+                trace_id=trace_id,
+                agent_name="tradingagents",
+                event="ta_progress",
+                tags={"stage": "task_triggered", "action": "triggered"},
+            ):
+                logger.info(
+                    f"[TA] 任务已触发 - {trigger_stock.symbol} (trace={trace_id})"
+                )
+        except Exception as e:
+            logger.warning(f"[TA] 写触发日志失败,不影响主流程: {e}")
 
     if not wait:
         # 异步模式：后台执行，立即返回

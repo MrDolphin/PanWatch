@@ -359,7 +359,14 @@ class NotifierManager:
             logger.warning(f"未知的自定义渠道类型: {ch_type}")
 
     async def _send_telegram(self, config: dict, title: str, content: str):
-        """Telegram Bot API（支持代理）"""
+        """Telegram Bot API（支持代理）
+
+        Telegram 老 Markdown 解析很脆弱:
+        - 不认 `**粗体**`(只认 `*粗体*`),GitHub 风格会导致 Can't find end of entity
+        - 不认 `### 标题`(把 # 当普通字符,但 ### 后面可能被截断)
+        - 单条上限 4096 字符,超过会被截断破坏实体
+        发送前做兼容性预处理 + 截断。
+        """
         bot_token = config.get("bot_token", "")
         chat_id = config.get("chat_id", "")
         # 渠道级代理优先，否则使用全局代理
@@ -369,7 +376,15 @@ class NotifierManager:
             raise ValueError("Telegram 需要 bot_token 和 chat_id")
 
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        text = f"*{title}*\n\n{content}" if title else content
+        # 用现成的 sanitize_for_telegram 把 markdown 完全剥成纯文本,
+        # 避免 `**粗体**` / `## 标题` / 未闭合实体导致 Telegram parse 失败。
+        # 标题外层手动加 `*...*` 让其加粗(Telegram 老 Markdown 只认单星号)。
+        safe_title = sanitize_for_telegram(title) if title else ""
+        safe_content = sanitize_for_telegram(content)
+        text = f"*{safe_title}*\n\n{safe_content}" if safe_title else safe_content
+        # Telegram 单条上限 4096,留点 buffer 给末尾提示
+        if len(text) > 3900:
+            text = text[:3900].rstrip() + "\n\n…内容过长已截断,完整报告请在 PanWatch 查看"
         payload = {
             "chat_id": chat_id,
             "text": text,

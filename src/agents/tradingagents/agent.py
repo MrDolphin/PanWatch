@@ -28,6 +28,7 @@ from src.agents.tradingagents.llm_adapter import (
 )
 from src.agents.tradingagents.portfolio_context import (
     build_portfolio_context,
+    build_stock_metadata_context,
     patch_propagator,
 )
 from src.agents.tradingagents.progress import PanWatchProgressHandler
@@ -110,10 +111,18 @@ class TradingAgentsAgent(BaseAgent):
             extra=(("days", 120),),
         )
 
+        # 事件/公告:深度分析需要更宽窗口(默认 since_hours=12 太短,只有当天才有)。
+        # 拉 30 天给 TradingAgents 的新闻分析师当个股新闻使用。
+        events_req = ProviderRequest(
+            symbols=(stock.symbol,),
+            market=stock.market.value,
+            since_hours=24 * 30,
+        )
+
         quotes_t = get_quote_orchestrator().fetch(req)
         klines_t = get_kline_orchestrator().fetch(kline_req)
         capital_t = get_capital_flow_orchestrator().fetch(req)
-        events_t = get_events_orchestrator().fetch(req)
+        events_t = get_events_orchestrator().fetch(events_req)
 
         try:
             quotes, klines, capital, events = await asyncio.gather(
@@ -126,12 +135,34 @@ class TradingAgentsAgent(BaseAgent):
         def _data(resp, default):
             return resp.data if resp and resp.success else default
 
+        # A 股 fetch 真实财报(akshare),非 A 股留空
+        financial: dict | None = None
+        if stock.market.value == "CN" and stock.symbol.isdigit() and len(stock.symbol) == 6:
+            try:
+                from src.agents.tradingagents.financial_data import fetch_financial_abstract
+                financial = await asyncio.to_thread(fetch_financial_abstract, stock.symbol)
+            except Exception as e:
+                logger.warning(f"[TA] 拉财报失败: {e}")
+                financial = None
+
+        # 预算技术指标(MA/MACD/RSI/KDJ/BOLL),给 get_indicators 工具用
+        technical = None
+        try:
+            from src.collectors.kline_collector import KlineCollector
+            technical = await asyncio.to_thread(
+                KlineCollector(stock.market).get_technical_indicators, stock.symbol
+            )
+        except Exception as e:
+            logger.debug(f"[TA] 技术指标预算失败,LLM 仍可从 K线 CSV 自行计算: {e}")
+
         return {
             "stock": stock,
             "quote": (_data(quotes, []) or [{}])[0] if _data(quotes, []) else {},
             "klines": _data(klines, []) or [],
             "capital_flow": _data(capital, []) or [],
             "events": _data(events, []) or [],
+            "financial": financial,
+            "technical": technical,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -212,12 +243,26 @@ class TradingAgentsAgent(BaseAgent):
         # 3) 进度回调
         progress_handler = PanWatchProgressHandler(trace_id, self.name)
 
-        # 4) 渲染用户持仓上下文(注入到 TA 的 past_context 通道,给 PM 看)
+        # 4) 渲染上下文(标的元信息 + 用户持仓)注入到 TA 的 past_context 通道
         current_price = (data.get("quote") or {}).get("current_price")
-        portfolio_context_text = build_portfolio_context(
+        cur_price_num = current_price if isinstance(current_price, (int, float)) else None
+        quote_data = data.get("quote") or {}
+
+        meta_context = build_stock_metadata_context(
+            stock_symbol=stock.symbol,
+            stock_name=stock.name or "",
+            market=stock.market.value,
+            current_price=cur_price_num,
+            industry=quote_data.get("industry", "") if isinstance(quote_data, dict) else "",
+        )
+        portfolio_part = build_portfolio_context(
             getattr(context, "portfolio", None),
             stock_symbol=stock.symbol,
-            current_price=current_price if isinstance(current_price, (int, float)) else None,
+            current_price=cur_price_num,
+        )
+        # 标的元信息永远放最前(即使没有持仓也注入)
+        portfolio_context_text = (
+            f"{meta_context}\n\n{portfolio_part}" if portfolio_part else meta_context
         )
 
         # 5) 同步阻塞,丢到线程池;加硬超时防卡死
@@ -257,6 +302,15 @@ class TradingAgentsAgent(BaseAgent):
             ta_result=ta_result,
             model_label=context.model_label,
         )
+
+        # 5b) 把本次 trace_id 的 toolkit 诊断聚合,持久化进 raw_data,
+        # 让历史报告 DoneView 也能展示数据注入情况。
+        try:
+            tid = getattr(progress_handler, "trace_id", "") if progress_handler else ""
+            if tid:
+                result.raw_data["toolkit_diagnostic"] = self._collect_toolkit_diagnostic(tid)
+        except Exception as e:
+            logger.warning(f"[TA] 收集 toolkit 诊断失败,忽略: {e}")
 
         # 6) 落库到 AnalysisHistory:供 UI 查最近一次结果 (DeepAnalysisModal 弹窗) +
         # 月度成本预算聚合。同标的同日复跑会覆盖 (analysis_history.save_analysis 语义)。
@@ -402,7 +456,8 @@ class TradingAgentsAgent(BaseAgent):
         inject_api_key_env(ai_client)
 
         # patch + 数据上下文,确保 TradingAgents 调 route_to_vendor 时拿到 PanWatch 数据
-        with patch_route_to_vendor(), panwatch_data_context(panwatch_data):
+        trace_id_for_ctx = getattr(progress_handler, "trace_id", "") if progress_handler else ""
+        with patch_route_to_vendor(), panwatch_data_context(panwatch_data, trace_id=trace_id_for_ctx):
             graph = TradingAgentsGraph(
                 selected_analysts=ta_config["selected_analysts"],
                 debug=False,
@@ -461,6 +516,41 @@ class TradingAgentsAgent(BaseAgent):
             propagator.get_graph_args = _patched  # type: ignore[method-assign]
         except Exception as e:
             logger.warning(f"[TA] 注入 LangGraph callbacks 失败: {e}")
+
+    @staticmethod
+    def _collect_toolkit_diagnostic(trace_id: str) -> dict:
+        """查同 trace_id 的 ta_toolkit 日志,聚合成 {summary, recent}。"""
+        from src.web.database import SessionLocal
+        from src.web.models import LogEntry
+
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(LogEntry)
+                .filter(LogEntry.trace_id == trace_id, LogEntry.event == "ta_toolkit")
+                .order_by(LogEntry.id.asc())
+                .all()
+            )
+        finally:
+            db.close()
+
+        summary = {"hit": 0, "miss": 0, "passthrough": 0, "fallthrough": 0, "error": 0}
+        recent = []
+        for r in rows:
+            tags = r.tags or {}
+            action = (tags.get("action") or "").lower()
+            if action in summary:
+                summary[action] += 1
+            recent.append({
+                "action": tags.get("action"),
+                "method": tags.get("method"),
+                "symbol": tags.get("symbol"),
+                "chars": tags.get("chars"),
+                "snippet": tags.get("snippet"),
+                "source": tags.get("source"),
+                "reason": tags.get("reason"),
+            })
+        return {"summary": summary, "recent": recent[-50:]}
 
     @staticmethod
     def _extract_cost_from_graph(graph) -> float:
