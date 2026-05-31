@@ -17,14 +17,22 @@ SETTING_KEY = "panwatch_base_url"
 
 
 def get_base_url() -> str:
-    """从 AppSettings 读取公开访问地址(去尾部斜杠);未配置返回空串。"""
-    db = SessionLocal()
+    """从 AppSettings 读取公开访问地址(去尾部斜杠);未配置 / DB 不可用返回空串。
+
+    包一层兜底:单测或 DB 未初始化(app_settings 表不存在)时,读取设置不应让整个
+    分析结果映射崩掉 —— 读不到就降级为空串(不拼详情链接)。
+    """
     try:
-        row = db.query(AppSettings).filter(AppSettings.key == SETTING_KEY).first()
-        val = (row.value if row and row.value else "").strip()
-        return val.rstrip("/")
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            row = db.query(AppSettings).filter(AppSettings.key == SETTING_KEY).first()
+            val = (row.value if row and row.value else "").strip()
+            return val.rstrip("/")
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 — DB 未初始化/表缺失等均降级为空
+        logger.debug(f"get_base_url 读取失败,降级为空: {e}")
+        return ""
 
 
 def analysis_detail_url(symbol: str, date: str, base_url: str = "") -> str:
