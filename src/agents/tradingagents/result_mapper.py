@@ -69,7 +69,7 @@ def map_state_to_result(
     action = RATING_ACTION_MAP.get(rating_raw, "hold")
     action_label = RATING_LABEL_MAP.get(rating_raw, "持有")
 
-    confidence = _extract_confidence(state)
+    confidence = _extract_confidence(state, rating_raw)
     short_reason = _short_reason(state)
 
     suggestion = {
@@ -98,10 +98,12 @@ def map_state_to_result(
             "rating": rating_raw or "hold",  # 新字段(5 档原始)
             "confidence": confidence,
             "debate_history": _extract_debate(state),
-            "risk_judgment": state.get("risk_judge_decision") or "",
+            "risk_judgment": _risk_judgment(state),
+            "risk_debate": _extract_risk_debate(state),
             "analyst_reports": {
                 "market": state.get("market_report") or "",
-                "social": state.get("social_report") or "",
+                # 上游情绪分析师字段是 sentiment_report;兼容旧 social_report
+                "social": state.get("sentiment_report") or state.get("social_report") or "",
                 "news": state.get("news_report") or "",
                 "fundamentals": state.get("fundamentals_report") or "",
             },
@@ -163,18 +165,31 @@ def _parse_rating_from_text(text: str) -> str:
     return ""
 
 
+# 置信度正则:冒号同时认半角(:)与全角(：)——PM 中文输出常用全角,
+# 早先只认半角导致永远抓不到、一律回退默认值。覆盖 "置信度: 8"、"置信度：8/10"、"信心 7"。
 _CONFIDENCE_PATTERNS = [
-    re.compile(r"confidence[:\s]+(\d+(?:\.\d+)?)\s*(?:/10)?", re.I),
-    re.compile(r"置信度[:\s]+(\d+(?:\.\d+)?)", re.I),
-    re.compile(r"信心(?:度)?[:\s]+(\d+(?:\.\d+)?)", re.I),
+    re.compile(r"confidence[:：\s]+(\d+(?:\.\d+)?)\s*(?:/\s*10)?", re.I),
+    re.compile(r"置信度[:：\s]+(\d+(?:\.\d+)?)\s*(?:/\s*10)?", re.I),
+    re.compile(r"信心(?:度)?[:：\s]+(\d+(?:\.\d+)?)\s*(?:/\s*10)?", re.I),
 ]
 
+# 抓不到显式数字时按 5 档评级推导基础置信度(B 方案),而非死的 5.0:
+# 强方向(买入/卖出)信心更高,中性(持有)居中。
+_RATING_CONFIDENCE_FALLBACK = {
+    "buy": 7.0,
+    "sell": 7.0,
+    "overweight": 6.0,
+    "underweight": 6.0,
+    "hold": 5.0,
+}
 
-def _extract_confidence(state: dict) -> float:
-    """从 PM/risk/trader 文本里粗暴提取置信度(0-10),失败默认 5.0。"""
+
+def _extract_confidence(state: dict, rating_raw: str = "") -> float:
+    """置信度(0-10):优先抓 PM/风控/交易员文本里的显式数字(A 方案);
+    抓不到则按评级推导(B 方案),不再一律返回 5.0。"""
     candidates = [
         state.get("final_trade_decision", ""),
-        state.get("risk_judge_decision", ""),
+        _risk_judgment(state),
         state.get("trader_investment_plan", ""),
     ]
     for text in candidates:
@@ -185,19 +200,23 @@ def _extract_confidence(state: dict) -> float:
             if m:
                 try:
                     v = float(m.group(1))
-                    # 处理百分制(转 0-10)
-                    if v > 10:
+                    if v > 10:  # 百分制转 0-10
                         v = v / 10
                     return max(0.0, min(10.0, v))
                 except (ValueError, IndexError):
                     continue
-    return 5.0
+    # B 兜底:按评级推导(无可识别评级才回退 5.0)
+    return _RATING_CONFIDENCE_FALLBACK.get(rating_raw, 5.0)
 
 
 def _short_reason(state: dict, limit: int = 120) -> str:
     """取一段精炼理由,优先 final_trade_decision 前 120 字。"""
-    for key in ("final_trade_decision", "trader_investment_plan", "risk_judge_decision"):
-        text = state.get(key) or ""
+    candidates = [
+        state.get("final_trade_decision") or "",
+        state.get("trader_investment_plan") or "",
+        _risk_judgment(state),
+    ]
+    for text in candidates:
         text = text.strip()
         if text:
             return _truncate(text, limit)
@@ -226,6 +245,29 @@ def _extract_debate(state: dict) -> dict:
         "history": debate.get("history", ""),
         "current_response": debate.get("current_response", ""),
         "judge_decision": debate.get("judge_decision", ""),
+    }
+
+
+def _risk_judgment(state: dict) -> str:
+    """风控团队裁决:上游在 risk_debate_state.judge_decision(激进/中立/保守辩论后的结论);
+    上游根本没有顶层 risk_judge_decision 字段,早先读它导致风控裁决一直空白。"""
+    rds = state.get("risk_debate_state")
+    if isinstance(rds, dict):
+        jd = (rds.get("judge_decision") or "").strip()
+        if jd:
+            return jd
+    return (state.get("risk_judge_decision") or "").strip()  # 兼容兜底
+
+
+def _extract_risk_debate(state: dict) -> dict:
+    """风控团队辩论(激进/中立/保守 + 裁决),结构对称 _extract_debate。
+    上游 risk_debate_state.history 是三方交替的完整辩论文本。"""
+    rds = state.get("risk_debate_state")
+    if not isinstance(rds, dict):
+        return {}
+    return {
+        "history": rds.get("history", ""),
+        "judge_decision": rds.get("judge_decision", ""),
     }
 
 
@@ -259,13 +301,12 @@ def _render_markdown(
     if judge_decision:
         parts.append(f"### ⚖️ 研究主管裁决(看多 vs 看空)\n\n{judge_decision}\n")
 
-    if state.get("risk_judge_decision"):
-        parts.append(f"### 🛡️ 风控辩论裁决\n\n{state['risk_judge_decision']}\n")
+    risk_jd = _risk_judgment(state)
+    if risk_jd:
+        parts.append(f"### 🛡️ 风控辩论裁决\n\n{risk_jd}\n")
 
-    # 4 位分析师摘要(每位截 300 字),避免 markdown 过长又能扫到关键观点
-    analyst_summary = _render_analyst_overview(state)
-    if analyst_summary:
-        parts.append(f"### 📊 4 位分析师观点概览\n\n{analyst_summary}\n")
+    # 4 位分析师完整报告不再塞进主体 markdown(早先截 300 字会把财务表格截在表头)。
+    # 完整内容在 raw_data.analyst_reports,由前端 tab 完整渲染(含 GFM 表格)。
 
     parts.append(
         "\n---\n"
@@ -277,21 +318,3 @@ def _render_markdown(
         parts.append(f" · AI:{model_label}")
 
     return "\n".join(parts)
-
-
-def _render_analyst_overview(state: dict, per_analyst_chars: int = 300) -> str:
-    """4 位分析师产出摘要(每位 N 字),让 markdown 主体也能看到他们的核心结论。"""
-    analysts = [
-        ("market_report", "📈 技术分析师"),
-        ("social_report", "💬 情绪分析师"),
-        ("news_report", "📰 新闻分析师"),
-        ("fundamentals_report", "💰 基本面分析师"),
-    ]
-    lines = []
-    for field, label in analysts:
-        text = (state.get(field) or "").strip()
-        if not text:
-            continue
-        snippet = _truncate(text, per_analyst_chars)
-        lines.append(f"**{label}**\n\n{snippet}\n")
-    return "\n".join(lines)

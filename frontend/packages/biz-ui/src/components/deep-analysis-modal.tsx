@@ -8,7 +8,9 @@
  */
 import { useEffect, useState, useCallback, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@panwatch/base-ui/components/ui/dialog'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@panwatch/base-ui/components/ui/tabs'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import { HoverPopover } from '@panwatch/base-ui/components/ui/hover-popover'
@@ -104,8 +106,6 @@ export function DeepAnalysisModal({
   const [progress, setProgress] = useState<ProgressResponse | null>(null)
   const [result, setResult] = useState<DeepAnalysisResult | null>(initialResult)
   const [error, setError] = useState<string>('')
-  const [showAnalystDetails, setShowAnalystDetails] = useState(false)
-  const [showDebate, setShowDebate] = useState(false)
   const [budget, setBudget] = useState<BudgetInfo | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // trigger 时间戳:前 60s 内允许 not_found(后端日志还没来得及写),不重置
@@ -330,10 +330,6 @@ export function DeepAnalysisModal({
 
         {stage === 'done' && result && <DoneView
           result={result}
-          showAnalystDetails={showAnalystDetails}
-          setShowAnalystDetails={setShowAnalystDetails}
-          showDebate={showDebate}
-          setShowDebate={setShowDebate}
           onRerun={() => handleStart(true)}
         />}
 
@@ -617,17 +613,9 @@ function StageRow({ stage }: { stage: ProgressStage }) {
 
 function DoneView({
   result,
-  showAnalystDetails,
-  setShowAnalystDetails,
-  showDebate,
-  setShowDebate,
   onRerun,
 }: {
   result: DeepAnalysisResult
-  showAnalystDetails: boolean
-  setShowAnalystDetails: (v: boolean) => void
-  showDebate: boolean
-  setShowDebate: (v: boolean) => void
   onRerun: () => void
 }) {
   // 防御性默认值:后端拉历史时可能 raw_data 缺失,这里给完整 fallback 避免白屏
@@ -647,6 +635,13 @@ function DoneView({
   const fromCache = rawData.from_cache
   const costUsd = rawData.cost_usd
 
+  // 最终决策 tab 只聚焦 PM + 交易员;研究主管裁决并入"看多看空辩论"、风控并入"风控辩论"(对称)
+  const decisionBody = [
+    rawData.final_decision && `### 🎯 PM 最终决策书\n\n${rawData.final_decision}`,
+    rawData.trader_plan && `### 💼 交易员执行计划\n\n${rawData.trader_plan}`,
+  ].filter(Boolean).join('\n\n')
+  const riskDebate = rawData.risk_debate
+
   return (
     <div className="space-y-4 text-[13px]">
       {fromCache && (
@@ -658,80 +653,21 @@ function DoneView({
         </div>
       )}
 
-      {/* 顶层摘要 */}
-      <div className="rounded-lg bg-accent/30 p-4 space-y-2">
-        <div className="flex items-center gap-3">
-          <span className={`text-[22px] font-bold ${DECISION_COLOR[sug.action] || ''}`}>
-            {sug.action_label}
-          </span>
-          <span className="text-[12px] text-muted-foreground">
-            置信度 {sug.confidence?.toFixed(1) ?? '-'} / 10
-          </span>
-        </div>
-        <div className="text-[12px] text-foreground/80">{sug.reason?.slice(0, 200)}</div>
-        <div className="flex items-center gap-3 text-[10px] text-muted-foreground mt-2">
-          <span>成本:${costUsd?.toFixed(4) ?? '-'}</span>
-        </div>
+      {/* 顶层摘要(精简成一行:决策 + 置信度 + 成本;完整理由在"最终决策" tab) */}
+      <div className="rounded-lg bg-accent/30 px-4 py-2.5 flex items-center gap-3 flex-wrap">
+        <span className={`text-[18px] font-bold ${DECISION_COLOR[sug.action] || ''}`}>
+          {sug.action_label}
+        </span>
+        <span className="text-[12px] text-muted-foreground">
+          置信度 {sug.confidence?.toFixed(1) ?? '-'} / 10
+        </span>
+        <span className="text-[10px] text-muted-foreground ml-auto">
+          成本:${costUsd?.toFixed(4) ?? '-'}
+        </span>
       </div>
 
-      {/* Markdown 推理 */}
-      <div className="rounded-lg border border-border/50 p-4">
-        <div className="prose prose-sm dark:prose-invert max-w-none">
-          <ReactMarkdown>{result.content}</ReactMarkdown>
-        </div>
-      </div>
-
-      {/* 分析师报告(可展开) */}
-      <div>
-        <button
-          className="text-[12px] text-muted-foreground hover:text-foreground flex items-center gap-1"
-          onClick={() => setShowAnalystDetails(!showAnalystDetails)}
-        >
-          {showAnalystDetails ? '▼' : '▶'} 4 位分析师报告
-        </button>
-        {showAnalystDetails && (
-          <div className="space-y-3 mt-2 pl-3 border-l-2 border-border/40">
-            {(['market', 'social', 'news', 'fundamentals'] as const).map((k) => {
-              const text = (reports as unknown as Record<string, string>)[k] || ''
-              if (!text) return null
-              return (
-                <details key={k} open className="text-[12px]">
-                  <summary className="font-medium cursor-pointer">
-                    {STAGE_LABEL[`${k}_analyst`] || k}
-                  </summary>
-                  <div className="mt-2 text-[11px] text-foreground/80 whitespace-pre-wrap">
-                    {text.slice(0, 1500)}
-                    {text.length > 1500 && '... (截断)'}
-                  </div>
-                </details>
-              )
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* 辩论历史(可展开) */}
-      {debate && debate.history && (
-        <div>
-          <button
-            className="text-[12px] text-muted-foreground hover:text-foreground flex items-center gap-1"
-            onClick={() => setShowDebate(!showDebate)}
-          >
-            {showDebate ? '▼' : '▶'} 看多看空辩论
-          </button>
-          {showDebate && (
-            <div className="mt-2 pl-3 border-l-2 border-border/40 text-[11px] text-foreground/80 whitespace-pre-wrap max-h-96 overflow-y-auto">
-              {debate.history}
-              {debate.judge_decision && (
-                <>
-                  <div className="font-medium mt-3 mb-1">研究主管裁决:</div>
-                  <div>{debate.judge_decision}</div>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      {/* 统一 tab:主 tab=最终决策,次 tab=四位分析师 + 多空辩论(完整内容 + GFM 表格) */}
+      <AnalysisTabs decisionBody={decisionBody} reports={reports} debate={debate} riskDebate={riskDebate} />
 
       {/* 数据注入诊断(历史报告):从 raw_data.toolkit_diagnostic 拿 */}
       {rawData.toolkit_diagnostic && (
@@ -746,6 +682,63 @@ function DoneView({
         本分析由 AI 多 Agent 框架生成,仅供学习研究参考,不构成任何投资建议。
         投资有风险,决策需自主判断。
       </div>
+    </div>
+  )
+}
+
+/** 决策与分析统一 tab:主 tab=最终决策(PM/交易员/研究主管/风控),次 tab=四位分析师 + 多空辩论。
+ *  只渲染有内容的 tab,完整内容 + GFM 表格。 */
+function AnalysisTabs({
+  decisionBody,
+  reports,
+  debate,
+  riskDebate,
+}: {
+  decisionBody: string
+  reports: { market: string; social: string; news: string; fundamentals: string }
+  debate?: { history: string; judge_decision: string } | null
+  riskDebate?: { history: string; judge_decision: string } | null
+}) {
+  const items: { key: string; label: string; content: string }[] = []
+  // 主 tab:最终决策(PM + 交易员,默认选中)
+  if (decisionBody) items.push({ key: 'decision', label: '最终决策', content: decisionBody })
+  // 次 tab:四位分析师
+  ;(['market', 'social', 'news', 'fundamentals'] as const).forEach((k) => {
+    const text = (reports as unknown as Record<string, string>)[k] || ''
+    if (text) items.push({ key: k, label: STAGE_LABEL[`${k}_analyst`] || k, content: text })
+  })
+  // 次 tab:看多看空辩论(研究团队:辩论历史 + 研究主管裁决)
+  if (debate?.history) {
+    let dc = debate.history
+    if (debate.judge_decision) dc += `\n\n### ⚖️ 研究主管裁决\n\n${debate.judge_decision}`
+    items.push({ key: 'debate', label: '看多看空辩论', content: dc })
+  }
+  // 次 tab:风控辩论(风控团队:激进/中立/保守辩论 + 风控裁决)
+  if (riskDebate?.history) {
+    let rc = riskDebate.history
+    if (riskDebate.judge_decision) rc += `\n\n### 🛡️ 风控裁决\n\n${riskDebate.judge_decision}`
+    items.push({ key: 'risk', label: '风控辩论', content: rc })
+  }
+  if (items.length === 0) return null
+
+  return (
+    <div className="rounded-lg border border-border/50 p-4">
+      <Tabs defaultValue={items[0].key}>
+        <TabsList>
+          {items.map((it) => (
+            <TabsTrigger key={it.key} value={it.key}>
+              {it.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {items.map((it) => (
+          <TabsContent key={it.key} value={it.key}>
+            <div className="prose prose-sm dark:prose-invert max-w-none max-h-[32rem] overflow-y-auto prose-table:my-2 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-table:text-[12px]">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{it.content}</ReactMarkdown>
+            </div>
+          </TabsContent>
+        ))}
+      </Tabs>
     </div>
   )
 }

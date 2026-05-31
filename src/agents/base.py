@@ -137,6 +137,9 @@ class AnalysisResult:
     agent_name: str
     title: str
     content: str
+    # 通知专用内容(完整、不截断);为空时通知回退用 content。
+    # 深度分析用它推送完整四位分析师观点,而弹窗 content 保持精简。
+    notify_content: str | None = None
     raw_data: dict = field(default_factory=dict)
     images: list[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
@@ -261,7 +264,7 @@ class BaseAgent(ABC):
                 # avoids repeated pushes when an agent is triggered multiple times.
                 ttl = self._notify_dedupe_ttl_minutes(context)
                 dedupe_key = build_notify_dedupe_key(
-                    self.name, result.title, result.content
+                    self.name, result.title, result.notify_content or result.content
                 )
                 scope = f"__notify__:{dedupe_key}"
                 allowed = check_and_mark_notify(
@@ -287,7 +290,7 @@ class BaseAgent(ABC):
                     logger.info(f"Agent [{self.display_name}] 开始发送通知")
                 notify_result = await context.notifier.notify_with_result(
                     result.title,
-                    result.content,
+                    result.notify_content or result.content,
                     result.images,
                 )
                 if notify_result.get("skipped"):

@@ -50,6 +50,7 @@ export interface DeepAnalysisResult {
     confidence: number
     debate_history: DebateHistory
     risk_judgment: string
+    risk_debate?: { history: string; judge_decision: string }
     analyst_reports: AnalystReports
     final_decision: string
     trader_plan: string

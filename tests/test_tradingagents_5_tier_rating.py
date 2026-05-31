@@ -243,57 +243,50 @@ def _full_state():
     }
 
 
-def test_markdown_contains_all_9_agent_outputs():
-    """markdown 必须体现 9 个 Agent 的产出(全部或概览)"""
+def test_markdown_contains_decision_chain():
+    """markdown 主体含决策链(PM/交易员/研究主管/风控);分析师完整报告移到 raw_data 由前端 tab 渲染"""
     r = map_state_to_result(
         stock=_stock(),
         ta_result={"decision": "Underweight", "final_state": _full_state(), "cost_usd": 0.05},
     )
     content = r.content
-    # PM 决策书
     assert "PM 最终决策书" in content
-    # 交易员
     assert "交易员执行计划" in content
-    # 研究主管(之前缺,只在折叠里)
     assert "研究主管裁决" in content
     assert "倾向谨慎持有" in content
-    # 风控
     assert "风控辩论裁决" in content
-    # 4 位分析师概览
-    assert "技术分析师" in content
-    assert "情绪分析师" in content
-    assert "新闻分析师" in content
-    assert "基本面分析师" in content
+    # 不再把分析师概览塞进主体(早先截 300 字会把财务表格截在表头)
+    assert "4 位分析师观点概览" not in content
+    # 完整分析师报告在 raw_data,前端 tab 渲染
+    reports = r.raw_data["analyst_reports"]
+    assert reports["market"] and reports["social"] and reports["news"] and reports["fundamentals"]
 
 
-def test_markdown_analyst_summary_truncated():
-    """4 位分析师摘要每位最多 300 字,避免 markdown 爆炸"""
+def test_analyst_reports_full_not_truncated():
+    """分析师报告在 raw_data 里完整保留、不截断(修复财务表格被截在表头)"""
+    state = _full_state()
     r = map_state_to_result(
         stock=_stock(),
-        ta_result={"decision": "Hold", "final_state": _full_state(), "cost_usd": 0.05},
+        ta_result={"decision": "Hold", "final_state": state, "cost_usd": 0.05},
     )
-    # 每位分析师的摘要应该被截断(原始内容 600+ 字)
-    # 找到"技术分析师" section,验证其下方截断
-    idx = r.content.find("📈 技术分析师")
-    next_idx = r.content.find("💬 情绪分析师", idx)
-    market_section = r.content[idx:next_idx]
-    # 应该有 ...(截断标记)
-    assert "..." in market_section
+    reports = r.raw_data["analyst_reports"]
+    # 完整等于原始报告,无任何截断
+    assert reports["market"] == state["market_report"]
+    assert reports["fundamentals"] == state["fundamentals_report"]
+    assert len(reports["market"]) > 300  # 远超旧的 300 字概览上限
 
 
-def test_markdown_skips_empty_analyst_sections():
-    """某位分析师没产出时,跳过该 section,不留空标题"""
+def test_empty_analyst_kept_empty_in_raw_data():
+    """某位分析师没产出 → raw_data 里为空串(前端 tab 跳过该 tab)"""
     state = _full_state()
     state["social_report"] = ""  # 情绪分析师没跑
     r = map_state_to_result(
         stock=_stock(),
         ta_result={"decision": "Hold", "final_state": state, "cost_usd": 0.05},
     )
-    # 其他三位还在
-    assert "技术分析师" in r.content
-    assert "新闻分析师" in r.content
-    # 情绪分析师 section 不应该出现(因为没数据)
-    assert "💬 情绪分析师" not in r.content
+    reports = r.raw_data["analyst_reports"]
+    assert reports["social"] == ""
+    assert reports["market"] and reports["news"] and reports["fundamentals"]
 
 
 def test_markdown_skips_judge_when_no_debate():
@@ -305,3 +298,69 @@ def test_markdown_skips_judge_when_no_debate():
         ta_result={"decision": "Hold", "final_state": state, "cost_usd": 0.05},
     )
     assert "研究主管裁决" not in r.content
+
+
+# ============================================================
+# 情绪分析师字段(上游 sentiment_report) + 通知完整内容
+# ============================================================
+
+def test_sentiment_report_maps_to_social():
+    """上游情绪字段是 sentiment_report,必须映射到 analyst_reports.social(修复看不到情绪分析师)"""
+    state = {"final_trade_decision": "评级：买入", "sentiment_report": "情绪面:讨论度上升,看多增加"}
+    r = map_state_to_result(stock=_stock(), ta_result={"decision": "Buy", "final_state": state, "cost_usd": 0.01})
+    assert r.raw_data["analyst_reports"]["social"] == "情绪面:讨论度上升,看多增加"
+
+
+def test_social_report_fallback_when_no_sentiment():
+    """旧字段 social_report 仍兼容(无 sentiment_report 时回退)"""
+    state = {"final_trade_decision": "评级：持有", "social_report": "旧情绪字段内容"}
+    r = map_state_to_result(stock=_stock(), ta_result={"decision": "Hold", "final_state": state, "cost_usd": 0.01})
+    assert r.raw_data["analyst_reports"]["social"] == "旧情绪字段内容"
+
+
+def test_notify_is_overview_without_analyst_details():
+    """通知只发概览(content=决策链:PM/交易员/裁决),不含四位分析师/辩论详细内容。
+    notify_content 不单独设置(None),base.py 回退用 content。"""
+    state = {
+        "final_trade_decision": "最终交易决策：买入",
+        "market_report": "技术分析详细内容" * 100,
+        "sentiment_report": "情绪" * 100,
+        "trader_investment_plan": "交易计划",
+    }
+    r = map_state_to_result(stock=_stock(), ta_result={"decision": "Buy", "final_state": state, "cost_usd": 0.01})
+    # 通知回退用 content(notify_content 未单独设置)
+    assert r.notify_content is None
+    # content(=通知内容)是决策链概览,不含四位分析师完整报告
+    assert state["market_report"] not in r.content
+    assert "四位分析师完整观点" not in r.content
+    # 但保留决策核心
+    assert "PM 最终决策书" in r.content
+
+
+# ============================================================
+# 置信度 A+B:优先抓 PM 显式数字(含全角冒号),抓不到按评级推导
+# ============================================================
+
+def test_confidence_extracted_fullwidth_colon():
+    """全角'置信度：8.5/10'能抓到真实值(早先只认半角冒号一律回退默认)"""
+    state = {"final_trade_decision": "评级：买入\n置信度：8.5/10"}
+    r = map_state_to_result(stock=_stock(), ta_result={"decision": "Buy", "final_state": state, "cost_usd": 0.01})
+    assert r.raw_data["suggestion"]["confidence"] == 8.5
+
+
+def test_confidence_extracted_halfwidth():
+    """半角'confidence: 7'仍能抓到"""
+    state = {"final_trade_decision": "Rating: Buy\nconfidence: 7"}
+    r = map_state_to_result(stock=_stock(), ta_result={"decision": "Buy", "final_state": state, "cost_usd": 0.01})
+    assert r.raw_data["suggestion"]["confidence"] == 7.0
+
+
+def test_confidence_derived_from_rating_when_absent():
+    """无显式置信度 → 按评级推导(强方向>中性),不再一律 5.0"""
+    buy = map_state_to_result(stock=_stock(), ta_result={"decision": "Buy", "final_state": {"final_trade_decision": "最终交易决策：买入"}, "cost_usd": 0.01})
+    hold = map_state_to_result(stock=_stock(), ta_result={"decision": "Hold", "final_state": {"final_trade_decision": "最终交易决策：持有"}, "cost_usd": 0.01})
+    sell = map_state_to_result(stock=_stock(), ta_result={"decision": "Sell", "final_state": {"final_trade_decision": "评级：卖出"}, "cost_usd": 0.01})
+    assert buy.raw_data["suggestion"]["confidence"] == 7.0
+    assert hold.raw_data["suggestion"]["confidence"] == 5.0
+    assert sell.raw_data["suggestion"]["confidence"] == 7.0
+    assert buy.raw_data["suggestion"]["confidence"] > hold.raw_data["suggestion"]["confidence"]
