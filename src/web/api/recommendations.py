@@ -27,6 +27,7 @@ from src.core.strategy_engine import (
     refresh_strategy_signals,
 )
 from src.core.factor_eval import evaluate_factor_ic
+from src.core.signal_explain import enrich_signal
 from src.web.database import SessionLocal
 from src.web.models import StrategySignalRun
 
@@ -231,7 +232,7 @@ def get_strategy_signal_list(
     risk_level: str = Query("", description="风险等级: low/medium/high/all"),
     include_payload: bool = Query(False, description="是否返回完整 payload（默认否，提升性能）"),
 ):
-    return list_strategy_signals(
+    result = list_strategy_signals(
         market=market,
         status=status,
         min_score=min_score,
@@ -243,6 +244,10 @@ def get_strategy_signal_list(
         risk_level=risk_level,
         include_payload=include_payload,
     )
+    # Phase 3: 注入 1-10 可解释评分 + 正负因子拆解
+    for _it in result.get("items", []):
+        enrich_signal(_it)
+    return result
 
 
 @router.get("/strategy-regimes")
