@@ -26,6 +26,7 @@ from src.core.strategy_engine import (
     rebalance_strategy_weights,
     refresh_strategy_signals,
 )
+from src.core.factor_eval import evaluate_factor_ic
 from src.web.database import SessionLocal
 from src.web.models import StrategySignalRun
 
@@ -357,6 +358,15 @@ def rebalance_strategy_weights_api(
 @router.get("/strategy-stats")
 def strategy_stats(days: int = Query(45, ge=1, le=365)):
     return get_strategy_stats(days=days)
+
+
+@router.get("/strategy-factor-ic")
+def strategy_factor_ic(
+    days: int = Query(90, ge=7, le=365, description="回看快照天数"),
+    horizon: int = Query(5, ge=1, le=60, description="持有期(交易日)"),
+):
+    """各因子的 IC/IR 有效性评估(StrategyFactorSnapshot × StrategyOutcome)。"""
+    return evaluate_factor_ic(days=days, horizon=horizon)
 
 
 @router.get("/strategy-weight-history")
