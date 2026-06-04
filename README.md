@@ -1,9 +1,11 @@
 # 盯盘侠 PanWatch
 
-**私有部署的 AI 股票助手** — 实时行情监控、智能技术分析、多账户持仓管理
+**自托管 AI 盯盘助手 · 集成 [TradingAgents](https://github.com/TauricResearch/TradingAgents) 多 Agent 投资决策** — A 股 / 港股 / 美股实时监控、持仓管理、智能分析、全渠道推送
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/TNT-Likely/PanWatch?style=flat&logo=github&color=yellow)](https://github.com/TNT-Likely/PanWatch/stargazers)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](https://hub.docker.com/r/sunxiao0721/panwatch)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/TNT-Likely/PanWatch)](https://github.com/TNT-Likely/PanWatch/commits/main)
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
@@ -18,20 +20,22 @@
 
 </details>
 
+> 💡 如果盯盘侠对你有帮助，点右上角 ⭐ **Star** 支持一下 —— 这是对开源项目最好的鼓励，也能让更多人发现它。
+
+## 🧠 深度分析：TradingAgents 多 Agent 决策
+
+接入 [TradingAgents](https://github.com/TauricResearch/TradingAgents)（76k+ star）多 Agent 投资决策框架，在持仓页点 🧠 图标即可触发：
+
+- **4 类分析师**（技术 / 情绪 / 新闻 / 基本面） → **看多看空辩论** → **风控审查** → **PM 整合决策**
+- 3-5 分钟输出完整推理链，结论同步推送到 Telegram / 微信 / 钉钉
+- 默认 deepseek-chat，单次 ~$0.05，月度预算可控
+- 配置指南：[`.docs/tradingagents/USER_GUIDE.md`](.docs/tradingagents/USER_GUIDE.md)
+
 ## 为什么选择盯盘侠？
 
 - **数据私有** — 自托管部署，持仓数据不经过任何第三方
 - **AI 原生** — 不是简单的指标堆砌，而是让 AI 理解你的持仓、风格和目标
 - **开箱即用** — Docker 一键部署，5 分钟完成配置
-
-## 🧠 深度分析 (NEW · TradingAgents 集成)
-
-接入 [TradingAgents](https://github.com/TauricResearch/TradingAgents)(76k star)多 Agent 投资决策框架,在持仓页点 🧠 图标即可触发:
-
-- **4 类分析师**(技术 / 情绪 / 新闻 / 基本面) → **看多看空辩论** → **风控** → **PM 整合**
-- 3-5 分钟出完整推理链,推送同步到 Telegram / 微信 / 钉钉
-- 默认 deepseek-chat,单次 ~$0.05;月度预算可控
-- 配置指南: [`.docs/tradingagents/USER_GUIDE.md`](.docs/tradingagents/USER_GUIDE.md)
 
 ## 核心功能
 
