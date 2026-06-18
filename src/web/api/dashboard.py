@@ -453,3 +453,30 @@ async def curate_today(req: CurateRequest, db: Session = Depends(get_db)):
         ]
     items.sort(key=lambda x: x["importance"], reverse=True)
     return {"items": items}
+
+
+@router.get("/brief")
+def get_brief(type: str = Query("eod", description="premarket | eod"), db: Session = Depends(get_db)):
+    """盘前/盘后 AI 简报(复用 premarket_outlook / daily_report agent 的最新报告)。"""
+    agent = "premarket_outlook" if type == "premarket" else "daily_report"
+    label = "盘前分析" if type == "premarket" else "收盘复盘"
+    row = (
+        db.query(AnalysisHistory)
+        .filter(AnalysisHistory.agent_name == agent)
+        .order_by(
+            AnalysisHistory.analysis_date.desc(),
+            AnalysisHistory.updated_at.desc(),
+            AnalysisHistory.id.desc(),
+        )
+        .first()
+    )
+    if not row:
+        return {"empty": True, "type": type, "agent_label": label}
+    return {
+        "type": type,
+        "agent_label": label,
+        "title": row.title or "",
+        "content": row.content or "",
+        "date": row.analysis_date or "",
+        "updated_at": _format_datetime(row.updated_at),
+    }

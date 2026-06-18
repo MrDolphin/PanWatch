@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
-import { RefreshCw, AlertTriangle, Sparkles, Activity, ShieldAlert } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Sparkles, Activity, ShieldAlert, Newspaper } from 'lucide-react'
 import {
   dashboardApi,
   portfolioApi,
@@ -18,6 +19,7 @@ import {
   type CuratedItem,
   type AttributionItem,
   type PortfolioAiReview,
+  type DashboardBrief,
 } from '@panwatch/api'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Onboarding } from '@panwatch/biz-ui/components/onboarding'
@@ -51,6 +53,7 @@ const FEED_BADGE: Record<string, { label: string; cls: string }> = {
 }
 
 export default function DashboardPage() {
+  const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
   const [indices, setIndices] = useState<DashboardMarketIndex[]>([])
   const [scan, setScan] = useState<DashboardMonitorStock[]>([])
@@ -64,6 +67,8 @@ export default function DashboardPage() {
   const [attribution, setAttribution] = useState<AttributionItem[]>([])
   const [aiReview, setAiReview] = useState<PortfolioAiReview | null>(null)
   const [aiReviewLoading, setAiReviewLoading] = useState(false)
+  const [brief, setBrief] = useState<DashboardBrief | null>(null)
+  const [briefOpen, setBriefOpen] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [modal, setModal] = useState<{ open: boolean; symbol: string; market: string; name: string; hasPosition: boolean }>({
     open: false,
@@ -101,6 +106,13 @@ export default function DashboardPage() {
         /* ignore */
       }
     }
+    // 盘前/盘后简报:取较新的一条
+    const [pm, eod] = await Promise.allSettled([dashboardApi.brief('premarket'), dashboardApi.brief('eod')])
+    const briefs = [pm, eod]
+      .filter((b): b is PromiseFulfilledResult<DashboardBrief> => b.status === 'fulfilled' && !b.value.empty)
+      .map((b) => b.value)
+    briefs.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+    setBrief(briefs[0] || null)
     setLoading(false)
   }, [])
 
@@ -372,15 +384,24 @@ export default function DashboardPage() {
 
         {/* 机会精选 */}
         <div className="card p-4">
-          <div className="mb-2 flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-semibold">机会精选</h2>
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <Sparkles className="h-4 w-4 text-primary" />
+              机会精选
+            </h2>
+            <button
+              type="button"
+              className="text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={() => navigate('/opportunities')}
+            >
+              进入机会页
+            </button>
           </div>
           {opportunities.length === 0 ? (
             <div className="py-6 text-center text-[12px] text-muted-foreground">{loading ? '加载中…' : '暂无活跃机会信号'}</div>
           ) : (
             <div className="divide-y divide-border/40">
-              {opportunities.map((o) => (
+              {opportunities.slice(0, 3).map((o) => (
                 <div
                   key={`${o.stock_market}:${o.stock_symbol}`}
                   className="flex cursor-pointer items-center gap-2 py-2 hover:bg-accent/30"
@@ -403,6 +424,29 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+
+      {brief && (brief.title || brief.content) && (
+        <div className="card mt-3 p-4">
+          <div className="mb-1 flex items-center justify-between">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <Newspaper className="h-4 w-4 text-primary" />
+              {brief.agent_label}
+              {brief.date && <span className="text-[11px] font-normal text-muted-foreground">{brief.date}</span>}
+            </h2>
+            {brief.content && (
+              <button type="button" className="text-[11px] text-muted-foreground" onClick={() => setBriefOpen((v) => !v)}>
+                {briefOpen ? '收起' : '展开'}
+              </button>
+            )}
+          </div>
+          {brief.title && <div className="text-[13px] font-medium">{brief.title}</div>}
+          {briefOpen && brief.content && (
+            <div className="prose prose-sm dark:prose-invert mt-1 max-w-none break-words text-[12px] [&_p]:my-1 [&_ul]:my-1">
+              <ReactMarkdown>{brief.content}</ReactMarkdown>
+            </div>
+          )}
+        </div>
+      )}
 
       <DiscoveryPanel monitorStocks={scan} onOpenStock={openStock} />
 

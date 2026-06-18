@@ -275,6 +275,19 @@ export const dashboardApi = {
       body: JSON.stringify({ candidates, model_id }),
       timeoutMs: 40000,
     }),
+
+  brief: (type: 'premarket' | 'eod') =>
+    fetchAPI<DashboardBrief>(`/dashboard/brief?type=${type}`),
+}
+
+export interface DashboardBrief {
+  empty?: boolean
+  type: string
+  agent_label?: string
+  title?: string
+  content?: string
+  date?: string
+  updated_at?: string
 }
 
 export interface CurateCandidate {
