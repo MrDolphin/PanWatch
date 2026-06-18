@@ -130,7 +130,7 @@ def _fetch_tencent_quotes(symbols: list[str]) -> list[dict]:
     if not symbols:
         return []
     url = TENCENT_QUOTE_URL + ",".join(symbols)
-    with httpx.Client() as client:
+    with httpx.Client(trust_env=False) as client:  # 行情直连,绕过 env 代理
         resp = client.get(url, timeout=10)
         content = resp.content.decode("gbk", errors="ignore")
 

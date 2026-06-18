@@ -109,7 +109,7 @@ class XueqiuNewsCollector(BaseNewsCollector):
         if self.cookies:
             headers["Cookie"] = self.cookies
 
-        async with httpx.AsyncClient(timeout=8, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=8, headers=headers, trust_env=False) as client:  # CN 源直连,绕过 env 代理
             tasks = [self._fetch_for_symbol(client, symbol, since) for symbol in a_share_symbols]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -284,7 +284,7 @@ class EastMoneyStockNewsCollector(BaseNewsCollector):
             "Referer": "https://so.eastmoney.com/",
             "Accept": "*/*",
         }
-        async with httpx.AsyncClient(timeout=8, verify=False, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=8, verify=False, headers=headers, trust_env=False) as client:  # CN 源直连,绕过 env 代理
             tasks = [
                 fetch_with_limit(client, symbol, symbol_names.get(symbol, symbol))
                 for symbol in symbols
@@ -323,7 +323,7 @@ class EastMoneyStockNewsCollector(BaseNewsCollector):
             "Referer": "https://so.eastmoney.com/",
             "Accept": "*/*",
         }
-        async with httpx.AsyncClient(timeout=8, verify=False, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=8, verify=False, headers=headers, trust_env=False) as client:  # CN 源直连,绕过 env 代理
             return await self._fetch_for_symbol(client, keyword, keyword, None)
 
     async def _fetch_for_symbol(self, client: httpx.AsyncClient, symbol: str, stock_name: str, since: datetime | None) -> list[NewsItem]:
@@ -482,7 +482,7 @@ class EastMoneyNewsCollector(BaseNewsCollector):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=5, verify=False) as client:
+            async with httpx.AsyncClient(timeout=5, verify=False, trust_env=False) as client:  # CN 源直连,绕过 env 代理
                 resp = await client.get(self.API_URL, params=params)
                 resp.raise_for_status()
                 data = resp.json()

@@ -1709,6 +1709,7 @@ def evaluate_entry_candidate_outcomes(
 
         today = date.today()
         kline_cache: dict[tuple[str, str], list] = {}
+        pending = 0  # 分批提交计数,缩短写事务窗口
 
         for c in candidates:
             snap_day = _parse_day(c.snapshot_date)
@@ -1804,6 +1805,12 @@ def evaluate_entry_candidate_outcomes(
                 db.add(row)
                 stats["evaluated"] += 1
                 existing.add((c.id, horizon))
+                pending += 1
+
+            # 分批提交:累计到阈值即落盘,缩短写事务,避免与 60s 调度器并发写长时间持锁
+            if pending >= 50:
+                db.commit()
+                pending = 0
 
         db.commit()
         return stats

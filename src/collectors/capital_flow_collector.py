@@ -77,7 +77,9 @@ class CapitalFlowCollector:
         }
 
         try:
-            with httpx.Client(follow_redirects=True, timeout=8) as client:
+            with httpx.Client(
+                follow_redirects=True, timeout=8, trust_env=False
+            ) as client:  # 行情直连,绕过 env 代理(生产代理会拦 push2his.eastmoney)
                 resp = client.get(EASTMONEY_FLOW_URL, params=params, headers=headers)
                 data = resp.json()
 

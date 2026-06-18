@@ -116,7 +116,7 @@ class EastMoneyEventsCollector:
                     verify=self.verify_ssl,
                     headers=headers,
                     follow_redirects=True,
-                    trust_env=True,
+                    trust_env=False,  # 不吃 env 代理(Telegram/AI 用),仅用显式配置的 self.proxy
                     proxy=self.proxy,
                 ) as client:
                     resp = await client.get(self.API_URL, params=params)

@@ -52,7 +52,10 @@ def _fetch_stooq_us_klines(symbol: str) -> list[KlineData]:
         try:
             timeout = 12 + attempt * 6
             with httpx.Client(
-                follow_redirects=True, timeout=timeout, headers=headers
+                follow_redirects=True,
+                timeout=timeout,
+                headers=headers,
+                trust_env=False,  # 行情直连,绕过 env 代理(生产代理会拦行情接口)
             ) as client:
                 resp = client.get(url, params=params)
                 resp.raise_for_status()
@@ -155,6 +158,7 @@ def _fetch_eastmoney_klines(
                 follow_redirects=True,
                 timeout=12 + attempt * 6,
                 headers=headers,
+                trust_env=False,  # 行情直连,绕过 env 代理(生产代理会拦 push2his.eastmoney)
             ) as client:
                 resp = client.get(EASTMONEY_KLINE_URL, params=params)
                 resp.raise_for_status()
@@ -492,7 +496,9 @@ class KlineCollector:
         }
 
         try:
-            with httpx.Client(follow_redirects=True, timeout=10) as client:
+            with httpx.Client(
+                follow_redirects=True, timeout=10, trust_env=False
+            ) as client:  # 行情直连,绕过 env 代理(生产代理会拦行情接口)
                 resp = client.get(TENCENT_KLINE_URL, params=params)
                 text = resp.text
 
@@ -550,7 +556,9 @@ class KlineCollector:
 
             # CN/HK: Tencent 在高 days 时可能只返回近几年，尝试 Eastmoney 补全更长历史
             if self.market in (MarketCode.CN, MarketCode.HK):
-                need_em = days >= 500 or len(klines) < max(120, int(days * 0.6))
+                # 仅当腾讯返回不足时才回退东财。去掉原 `days >= 500` 的无条件触发——
+                # 否则评估循环(days=600)每只标的都额外打一次东财,把它打到自我限流。
+                need_em = len(klines) < max(120, int(days * 0.6))
                 if need_em:
                     # 额外放大窗口，提升拿到更长历史的概率
                     em_target_days = min(max(days, 3000), 20000)

@@ -470,16 +470,20 @@ class PaperTradingEngine:
 
             # 检查信号反转
             if pos.signal_run_id:
-                latest = (
-                    db.query(StrategySignalRun)
-                    .filter(
-                        StrategySignalRun.stock_symbol == pos.stock_symbol,
-                        StrategySignalRun.stock_market == pos.stock_market,
-                        StrategySignalRun.status == "active",
+                # no_autoflush: 信号查询是只读的,不要把本轮累积的持仓现价更新提前 flush——
+                # 否则扫描中途会反复抢 SQLite 写锁,与其它调度器并发写时触发 "database is locked"。
+                # 所有写入统一在本方法末尾 db.commit() 时一次性落盘。
+                with db.no_autoflush:
+                    latest = (
+                        db.query(StrategySignalRun)
+                        .filter(
+                            StrategySignalRun.stock_symbol == pos.stock_symbol,
+                            StrategySignalRun.stock_market == pos.stock_market,
+                            StrategySignalRun.status == "active",
+                        )
+                        .order_by(StrategySignalRun.created_at.desc())
+                        .first()
                     )
-                    .order_by(StrategySignalRun.created_at.desc())
-                    .first()
-                )
                 if latest and latest.action in ("sell", "reduce"):
                     trade = self._close_position(db, account, pos, current_price, "signal_reversal")
                     exit_events.append((pos, trade))
