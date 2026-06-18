@@ -24,17 +24,17 @@ const navItems = [
   { to: '/', icon: LayoutDashboard, label: '首页' },
   { to: '/portfolio', icon: List, label: '持仓' },
   { to: '/opportunities', icon: Sparkles, label: '机会' },
-  { to: '/alerts', icon: BellRing, label: '提醒' },
   { to: '/paper-trading', icon: Activity, label: '模拟盘' },
+  { to: '/alerts', icon: BellRing, label: '提醒' },
   { to: '/agents', icon: Bot, label: 'Agent' },
   { to: '/history', icon: Clock, label: '历史' },
   { to: '/datasources', icon: Database, label: '数据源' },
   { to: '/settings', icon: Settings, label: '设置' },
 ]
-const desktopPrimaryNavItems = navItems.slice(0, 4)
-const desktopMoreNavItems = navItems.slice(4)
-const mobilePrimaryNavItems = navItems.slice(0, 4)
-const mobileMoreNavItems = navItems.slice(4)
+const desktopPrimaryNavItems = navItems.slice(0, 5)
+const desktopMoreNavItems = navItems.slice(5)
+const mobilePrimaryNavItems = navItems.slice(0, 5)
+const mobileMoreNavItems = navItems.slice(5)
 
 // 认证守卫组件
 function RequireAuth({ children }: { children: React.ReactNode }) {
