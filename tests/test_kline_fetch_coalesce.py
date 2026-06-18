@@ -90,3 +90,27 @@ def test_different_symbols_not_blocked(monkeypatch):
     col.get_klines("600519")
     col.get_klines("000001")
     assert calls["n"] == 2, f"两个不同标的各应联网一次,实际 {calls['n']} 次"
+
+
+def test_insufficient_result_negative_cached(monkeypatch):
+    """取到数据但不足 need(HK 腾讯少量 + eastmoney 补全失败)→ 冷却内不再联网。
+
+    复现 outcome_eval 刷屏:正缓存因 count<need 永不命中,旧逻辑只在"空结果"时负缓存,
+    导致每轮都重打 eastmoney 补全源。
+    """
+    calls = {"n": 0}
+
+    def short_tencent(symbol, market, days):
+        calls["n"] += 1
+        return [
+            kc.KlineData(date=f"2026-01-{i + 1:02d}", open=1, close=1, high=1, low=1, volume=1)
+            for i in range(30)
+        ]
+
+    monkeypatch.setattr(kc, "_fetch_tencent_klines", short_tencent)
+    monkeypatch.setattr(kc, "_fetch_eastmoney_klines", lambda *a, **k: [])
+
+    col = kc.KlineCollector(MarketCode.HK)
+    col.get_klines("06082", days=120)  # 拿到 30 < need(120) → 冷却 + 缓存部分
+    col.get_klines("06082", days=120)  # 冷却内,服务缓存,不再联网
+    assert calls["n"] == 1, f"不足 need 时也应负缓存,实际联网 {calls['n']} 次"

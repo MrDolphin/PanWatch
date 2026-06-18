@@ -330,6 +330,10 @@ def patch_route_to_vendor():
         yield
         return
 
+    # 同时接管 load_ohlcv:新上游 get_verified_market_snapshot 绕过 route_to_vendor
+    # 直连 yfinance,A股/港股拉不到会 NoMarketDataError(永久安装,非 PanWatch 标的透传)。
+    _ensure_load_ohlcv_patched()
+
     import importlib
     with _patch_lock:
         if _patch_refcount == 0:
@@ -361,6 +365,99 @@ def patch_route_to_vendor():
                 for mod, attr, orig in _patch_saved_sites:
                     setattr(mod, attr, orig)
                 _patch_saved_sites.clear()
+
+
+# ---------------------------------------------------------------------------
+# load_ohlcv 接管
+# 新上游 get_verified_market_snapshot → market_data_validator.load_ohlcv 直连 yfinance,
+# 不经 route_to_vendor。A股(无 .SS)/港股(无 .HK)yfinance 拉不到 → NoMarketDataError,
+# 整个 TradingAgents 分析失败。这里把 A股/港股的 load_ohlcv 改走 PanWatch K线;
+# 非 PanWatch 标的(美股)透传原生 yfinance,故进程级永久安装安全、无需卸载。
+# ---------------------------------------------------------------------------
+_LOAD_OHLCV_PATCHED = False
+_real_load_ohlcv: Any = None
+_LOAD_OHLCV_IMPORT_SITES = (
+    "tradingagents.dataflows.market_data_validator",
+    "tradingagents.dataflows.interface",
+)
+
+
+def _build_panwatch_ohlcv_df(symbol: str, curr_date: str):
+    """用 PanWatch K线构建与原生 load_ohlcv 同结构的 DataFrame(Date/Open/High/Low/Close/Volume)。"""
+    import pandas as pd
+
+    from src.collectors.kline_collector import KlineCollector
+    from src.models.market import MarketCode
+
+    market = MarketCode.CN if is_a_share(symbol) else MarketCode.HK
+    klines = KlineCollector(market).get_klines(symbol, days=750)
+    if not klines:
+        return None
+    df = pd.DataFrame(
+        [
+            {
+                "Date": k.date,
+                "Open": k.open,
+                "High": k.high,
+                "Low": k.low,
+                "Close": k.close,
+                "Volume": k.volume,
+            }
+            for k in klines
+        ]
+    )
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"])
+    if curr_date:
+        try:
+            df = df[df["Date"] <= pd.to_datetime(curr_date)]
+        except Exception:
+            pass
+    return df.reset_index(drop=True)
+
+
+def _panwatch_load_ohlcv(symbol: str, curr_date: str, *args, **kwargs):
+    """A股/港股用 PanWatch K线构建 OHLCV;其余或兜底失败放行原生 yfinance 路径。"""
+    try:
+        if is_panwatch_routable(symbol):
+            df = _build_panwatch_ohlcv_df(symbol, curr_date)
+            if df is not None and not df.empty:
+                _emit_toolkit_log("info", "panwatch", "load_ohlcv", symbol, rows=int(len(df)))
+                return df
+            _emit_toolkit_log("warning", "miss", "load_ohlcv", symbol)
+    except Exception as e:
+        logger.warning(f"[TA toolkit] load_ohlcv PanWatch 兜底失败 symbol={symbol}: {e}")
+    return _real_load_ohlcv(symbol, curr_date, *args, **kwargs)
+
+
+def _ensure_load_ohlcv_patched() -> None:
+    """进程级幂等安装 load_ohlcv 补丁(含所有 import sites);非 PanWatch 标的透传,无需卸载。"""
+    global _LOAD_OHLCV_PATCHED, _real_load_ohlcv
+    if _LOAD_OHLCV_PATCHED:
+        return
+    try:
+        from tradingagents.dataflows import stockstats_utils
+    except ImportError:
+        return
+    if not hasattr(stockstats_utils, "load_ohlcv"):
+        return
+    import importlib
+
+    with _patch_lock:
+        if _LOAD_OHLCV_PATCHED:
+            return
+        _real_load_ohlcv = stockstats_utils.load_ohlcv
+        stockstats_utils.load_ohlcv = _panwatch_load_ohlcv
+        for module_path in _LOAD_OHLCV_IMPORT_SITES:
+            try:
+                mod = importlib.import_module(module_path)
+            except ImportError:
+                continue
+            if getattr(mod, "load_ohlcv", None) is not None:
+                mod.load_ohlcv = _panwatch_load_ohlcv
+                logger.debug(f"[TA toolkit] patched load_ohlcv in {module_path}")
+        _LOAD_OHLCV_PATCHED = True
+        logger.info("[TA toolkit] load_ohlcv 已接管(A股/港股走 PanWatch,防 yfinance NoMarketData)")
 
 
 def _args_summary(args: tuple) -> str:
