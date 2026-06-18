@@ -44,19 +44,18 @@ def test_avatar_default_empty():
 
 
 def test_avatar_set_get_roundtrip():
-    """PUT /avatar 后能 GET 回(验证 /avatar 不被 /{key} 抢匹配)。"""
+    """通用 PUT /settings/ui_avatar 写入后,GET /settings/avatar 能读回(读写不依赖路由顺序)。"""
     client = _client()
     data_url = "data:image/png;base64,AAAA"
-    r = client.put("/settings/avatar", json={"value": data_url})
+    r = client.put("/settings/ui_avatar", json={"value": data_url})
     assert r.status_code == 200, r.text
-    assert r.json()["value"] == data_url
     assert client.get("/settings/avatar").json()["value"] == data_url
 
 
 def test_avatar_not_in_generic_list():
     """头像存于独立 key,不应出现在通用设置列表(避免大 base64 污染)。"""
     client = _client()
-    client.put("/settings/avatar", json={"value": "data:image/png;base64,XYZ"})
+    client.put("/settings/ui_avatar", json={"value": "data:image/png;base64,XYZ"})
     keys = [s["key"] for s in client.get("/settings").json()]
     assert "ui_avatar" not in keys
 
@@ -64,6 +63,6 @@ def test_avatar_not_in_generic_list():
 def test_avatar_clear():
     """传空字符串可清空头像。"""
     client = _client()
-    client.put("/settings/avatar", json={"value": "data:image/png;base64,XYZ"})
-    client.put("/settings/avatar", json={"value": ""})
+    client.put("/settings/ui_avatar", json={"value": "data:image/png;base64,XYZ"})
+    client.put("/settings/ui_avatar", json={"value": ""})
     assert client.get("/settings/avatar").json()["value"] == ""

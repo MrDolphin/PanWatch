@@ -21,9 +21,13 @@ function load(): Promise<string> {
   return inflight
 }
 
-/** 保存头像(传空字符串清空)并广播,使所有头像处即时更新。 */
+/**
+ * 保存头像(传空字符串清空)并广播,使所有头像处即时更新。
+ * 走通用 PUT /settings/{key}(catch-all)写入 ui_avatar:不依赖新路由注册顺序,
+ * 读取则用 GET /settings/avatar(单独读 ui_avatar)。
+ */
 export async function saveAvatar(value: string): Promise<void> {
-  await fetchAPI('/settings/avatar', { method: 'PUT', body: JSON.stringify({ value }) })
+  await fetchAPI('/settings/ui_avatar', { method: 'PUT', body: JSON.stringify({ value }) })
   cache = value
   window.dispatchEvent(new CustomEvent<string>(EVENT, { detail: value }))
 }

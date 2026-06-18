@@ -104,22 +104,14 @@ AVATAR_KEY = "ui_avatar"
 
 @router.get("/avatar")
 def get_avatar(db: Session = Depends(get_db)):
-    """用户头像(data URL 或图片地址)。单独存取,不混入通用设置列表。"""
+    """读取用户头像(data URL 或图片地址)。
+
+    头像通过通用 PUT /settings/{AVATAR_KEY} 写入(走 catch-all,不依赖路由注册顺序),
+    这里单独读取,避免大 base64 混进通用设置列表。GET /avatar 无 /{key} 同名 GET,
+    不存在路由抢匹配问题。
+    """
     row = db.query(AppSettings).filter(AppSettings.key == AVATAR_KEY).first()
     return {"value": (row.value if row and row.value else "")}
-
-
-@router.put("/avatar")
-def set_avatar(update: SettingUpdate, db: Session = Depends(get_db)):
-    """保存/清空用户头像(传空字符串即清空)。需在 /{key} 之前注册以优先匹配。"""
-    row = db.query(AppSettings).filter(AppSettings.key == AVATAR_KEY).first()
-    if not row:
-        row = AppSettings(key=AVATAR_KEY, value=update.value or "", description="用户头像")
-        db.add(row)
-    else:
-        row.value = update.value or ""
-    db.commit()
-    return {"value": row.value or ""}
 
 
 @router.put("/{key}", response_model=SettingResponse)

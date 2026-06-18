@@ -593,7 +593,7 @@ export default function SettingsPage() {
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-accent/30" />
         <div className="relative flex flex-col md:flex-row md:items-end md:justify-between gap-4">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
               <input ref={avatarFileRef} type="file" accept="image/*" className="hidden" onChange={onPickAvatar} />
               <button
                 type="button"
@@ -621,9 +621,7 @@ export default function SettingsPage() {
                   移除头像
                 </button>
               ) : null}
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="mx-1 hidden h-4 w-px bg-border/50 sm:block" />
               <div className="px-2.5 py-1 rounded-full bg-background/70 border border-border/50 text-[11px] text-muted-foreground">
                 <span className="font-mono text-foreground/90">{services.length}</span> 服务商
               </div>
