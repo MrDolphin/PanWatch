@@ -27,6 +27,7 @@ from src.web.api import (
     paper_trading,
     chat,
 )
+from src.web.api import factors
 from src.web.api import insights
 from src.web.api.auth import get_current_user
 from src.web.api.settings import get_app_version
@@ -143,6 +144,12 @@ app.include_router(
     dashboard.router,
     prefix="/api/dashboard",
     tags=["dashboard"],
+    dependencies=protected,
+)
+app.include_router(
+    factors.router,
+    prefix="/api/factors",
+    tags=["factors"],
     dependencies=protected,
 )
 app.include_router(
