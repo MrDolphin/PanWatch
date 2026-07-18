@@ -433,16 +433,32 @@ def _build_panwatch_ohlcv_df(symbol: str, curr_date: str):
 
 
 def _panwatch_load_ohlcv(symbol: str, curr_date: str, *args, **kwargs):
-    """A股/港股用 PanWatch K线构建 OHLCV;其余或兜底失败放行原生 yfinance 路径。"""
-    try:
-        if is_panwatch_routable(symbol):
+    """A股/港股走 PanWatch K线;美股等非 PanWatch 标的放行原生 yfinance。
+
+    A股/港股 PanWatch 拉空时**不回退 yfinance**(A股/港股在 Yahoo 无数据 + 限流,回退只会
+    把"K线获取失败"变成误导的"Yahoo no rows"),直接抛 NoMarketDataError 报清晰错。
+    """
+    if is_panwatch_routable(symbol):
+        df = None
+        try:
             df = _build_panwatch_ohlcv_df(symbol, curr_date)
-            if df is not None and not df.empty:
-                _emit_toolkit_log("info", "panwatch", "load_ohlcv", symbol, rows=int(len(df)))
-                return df
-            _emit_toolkit_log("warning", "miss", "load_ohlcv", symbol)
-    except Exception as e:
-        logger.warning(f"[TA toolkit] load_ohlcv PanWatch 兜底失败 symbol={symbol}: {e}")
+        except Exception as e:
+            logger.warning(f"[TA toolkit] load_ohlcv PanWatch 取数异常 symbol={symbol}: {e}")
+        if df is not None and not df.empty:
+            _emit_toolkit_log("info", "panwatch", "load_ohlcv", symbol, rows=int(len(df)))
+            return df
+        _emit_toolkit_log("warning", "miss", "load_ohlcv", symbol)
+        # A股/港股不回退 yahoo:抛 TA 期望的 NoMarketDataError,报清晰真因
+        try:
+            from tradingagents.dataflows.errors import NoMarketDataError
+            raise NoMarketDataError(
+                symbol, symbol,
+                "PanWatch K线获取失败(A股/港股不回退 Yahoo,请检查代理分流/数据源是否可达)",
+            )
+        except ImportError:
+            raise RuntimeError(
+                f"PanWatch K线获取失败 symbol={symbol}(A股/港股不回退 Yahoo,请检查代理/数据源)"
+            )
     return _real_load_ohlcv(symbol, curr_date, *args, **kwargs)
 
 
@@ -630,13 +646,11 @@ def _serve_keyword_news(keyword: str) -> str:
     """实时按行业/主题关键词搜中文新闻(东方财富搜索),格式化返回。
 
     用于 get_news 的 query 是行业/主题词(非 ticker,如"汽车行业""新能源汽车")时,
-    替代拉不到中文数据的上游 vendor。在 worker 线程内同步执行(asyncio.run)。
+    替代拉不到中文数据的上游 vendor。md_news_by_keyword 本身同步,直接调用即可。
     """
-    import asyncio
+    from src.core.marketdata_client import md_news_by_keyword
 
-    from src.collectors.news_collector import EastMoneyStockNewsCollector
-
-    items = asyncio.run(EastMoneyStockNewsCollector().fetch_by_keyword(keyword))
+    items = md_news_by_keyword(keyword)
     if not items:
         return (
             f"[未搜到「{keyword}」相关行业/主题新闻。请基于个股新闻 + 元信息分析,"

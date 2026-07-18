@@ -48,7 +48,7 @@ class SettingResponse(BaseModel):
 
 # 配置项描述
 SETTING_DESCRIPTIONS = {
-    "http_proxy": "HTTP 代理地址",
+    "http_proxy": "HTTP 代理地址(配置后所有对外请求含行情/新闻/AI/通知统一走此代理)",
     "notify_quiet_hours": "通知静默时间段（HH:MM-HH:MM，空为关闭）",
     "notify_retry_attempts": "通知失败重试次数（不含首次）",
     "notify_retry_backoff_seconds": "通知重试退避秒数（基数）",
@@ -191,7 +191,7 @@ def update_setting(key: str, update: SettingUpdate, db: Session = Depends(get_db
     db.commit()
     db.refresh(setting)
 
-    # http_proxy 改动需要立刻反映到环境变量,否则 httpx 默认 Client 要重启才感知
+    # http_proxy 改动立刻反映到进程 env,所有 httpx(trust_env=True)免重启即走新代理
     if key == "http_proxy":
         try:
             from server import apply_proxy_env
