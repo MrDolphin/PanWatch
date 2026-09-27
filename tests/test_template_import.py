@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -167,6 +169,17 @@ def test_import_with_only_dangling_ids_finishes_without_foreign_key_error(monkey
     assert result["summary"]["dropped_notify_channel_refs"] == 2
 
 
+def test_import_rejects_unsupported_template_version_with_stable_error_code():
+    with pytest.raises(HTTPException) as exc_info:
+        import_template(payload=TemplatePayload(version=3), mode="merge", db=None)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == {
+        "code": "template_version_unsupported",
+        "message": "不支持的配置包版本: 3",
+    }
+
+
 def test_v2_round_trip_recreates_sensitive_config_positions_and_relations(monkeypatch):
     """v2 配置包在 ID 不同的目标库中按自然键重建完整关系。"""
     monkeypatch.setitem(
@@ -301,6 +314,52 @@ def test_export_only_contains_selected_modules():
     assert "notify_channels" not in exported
     assert "agents" not in exported
     assert "stocks" not in exported
+
+
+def test_template_does_not_export_or_restore_agent_output_language(monkeypatch):
+    """旧配置包中的独立报告语言不应覆盖界面语言。"""
+    monkeypatch.setitem(
+        sys.modules, "server", SimpleNamespace(reload_scheduler=lambda: False)
+    )
+    source = _session()
+    source.add(
+        AgentConfig(
+            name="tradingagents",
+            display_name="TradingAgents",
+            config={"output_language": "English", "timeout_minutes": 15},
+        )
+    )
+    source.commit()
+
+    exported = export_template(include_internal=True, modules="agents", db=source)
+    assert exported["agents"][0]["config"] == {"timeout_minutes": 15}
+
+    target = _session()
+    target.add(
+        AgentConfig(
+            name="tradingagents",
+            display_name="TradingAgents",
+            config={"output_language": "Chinese", "monthly_budget_usd": 10},
+        )
+    )
+    target.commit()
+    legacy_payload = TemplatePayload.model_validate(
+        {
+            "version": 2,
+            "modules": ["agents"],
+            "agents": [
+                {
+                    "name": "tradingagents",
+                    "config": {"output_language": "English", "timeout_minutes": 20},
+                }
+            ],
+        }
+    )
+
+    import_template(payload=legacy_payload, mode="merge", modules="agents", db=target)
+
+    restored = target.query(AgentConfig).filter_by(name="tradingagents").one()
+    assert restored.config == {"monthly_budget_usd": 10, "timeout_minutes": 20}
 
 
 def test_import_only_applies_selected_modules(monkeypatch):

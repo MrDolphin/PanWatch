@@ -309,12 +309,13 @@ class TradingAgentsAgent(BaseAgent):
 
         # 2) 构造 TradingAgents config (支持 deep / quick 双模型)
         from src.platform.persistence.database import DB_PATH
+        output_language = "English" if context.report_language == "en-US" else "Chinese"
         ta_runtime_dir = Path(DB_PATH).resolve().parent / "tradingagents"
         ta_config = build_ta_llm_config(
             context.ai_client,
             debate_rounds=self.debate_rounds,
             selected_analysts=self.analyst_types,
-            output_language=self.output_language,
+            output_language=output_language,
             deep_model=self.deep_model,
             quick_model=self.quick_model,
             market=stock.market.value,
@@ -390,6 +391,7 @@ class TradingAgentsAgent(BaseAgent):
             stock=stock,
             ta_result=ta_result,
             model_label=context.model_label,
+            output_language=output_language,
         )
 
         # 存分析时实时价 → 历史决策表"分析价"立即显示(不必等当日 K线收盘回填)

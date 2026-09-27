@@ -6,6 +6,7 @@ import type { ThemeMode } from '@/hooks/use-theme'
 import { useAvatar } from '@/hooks/use-avatar'
 import { useTranslation } from 'react-i18next'
 import { changeLocale, normalizeLocale, type SupportedLocale } from '@/i18n'
+import { useInterfaceLanguage } from '@/i18n/interface-language'
 
 export interface AccountNavItem {
   to: string
@@ -19,9 +20,9 @@ const THEME_OPTIONS: { value: ThemeMode; icon: LucideIcon; labelKey: 'light' | '
   { value: 'system', icon: Monitor, labelKey: 'system' },
 ]
 
-const LANGUAGE_OPTIONS: { value: SupportedLocale; labelKey: 'simplifiedChinese' | 'englishExperimental' }[] = [
+const LANGUAGE_OPTIONS: { value: SupportedLocale; labelKey: 'simplifiedChinese' | 'english' }[] = [
   { value: 'zh-CN', labelKey: 'simplifiedChinese' },
-  { value: 'en-US', labelKey: 'englishExperimental' },
+  { value: 'en-US', labelKey: 'english' },
 ]
 
 interface AccountMenuProps {
@@ -49,6 +50,7 @@ export default function AccountMenu({
 }: AccountMenuProps) {
   const { t, i18n: i18nInstance } = useTranslation('settings')
   const currentLocale = normalizeLocale(i18nInstance.resolvedLanguage || i18nInstance.language)
+  useInterfaceLanguage()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement | null>(null)
   const location = useLocation()

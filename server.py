@@ -924,6 +924,16 @@ def _get_app_setting(key: str) -> str:
         db.close()
 
 
+def _get_report_language() -> str:
+    from src.platform.language import resolve_report_language
+
+    db = SessionLocal()
+    try:
+        return resolve_report_language(db)
+    finally:
+        db.close()
+
+
 def resolve_ai_model(
     agent_name: str, stock_agent_id: int | None = None
 ) -> tuple[AIModel | None, AIService | None]:
@@ -1094,6 +1104,7 @@ def build_context(agent_name: str, stock_agent_id: int | None = None) -> AgentCo
         portfolio=portfolio,
         model_label=model_label,
         notify_policy=getattr(notifier, "policy", None),
+        report_language=_get_report_language(),
     )
 
 
@@ -1378,6 +1389,7 @@ async def trigger_agent_for_stock(
         portfolio=portfolio,
         model_label=model_label,
         suppress_notify=suppress_notify,
+        report_language=_get_report_language(),
     )
     # 暴露 trace_id / force_refresh 给 agent(供 TradingAgents 进度反馈 + 缓存控制使用)。
     # AgentContext 不强制声明此字段,通过 setattr 注入,其他 agent 不受影响。

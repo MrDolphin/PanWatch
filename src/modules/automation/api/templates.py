@@ -2,12 +2,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.platform.persistence.database import get_db
+from src.web.errors import api_error
 from src.platform.persistence.models import (
     AIModel,
     AIService,
@@ -145,6 +146,12 @@ _MODULES = set(_MODULE_ORDER)
 _LEGACY_MODULES = {"settings", "agents", "watchlist"}
 
 
+def _portable_agent_config(config: dict | None) -> dict:
+    value = dict(config or {})
+    value.pop("output_language", None)
+    return value
+
+
 def _selected_modules(
     raw: str | None, payload: TemplatePayload | None = None
 ) -> set[str]:
@@ -159,9 +166,9 @@ def _selected_modules(
 
     invalid = selected - _MODULES
     if invalid:
-        raise HTTPException(400, f"不支持的配置模块: {', '.join(sorted(invalid))}")
+        raise api_error(400, "template_module_invalid", f"不支持的配置模块: {', '.join(sorted(invalid))}")
     if not selected:
-        raise HTTPException(400, "请至少选择一个配置模块")
+        raise api_error(400, "template_module_required", "请至少选择一个配置模块")
     return selected
 
 
@@ -275,7 +282,7 @@ def export_template(
                         for channel_id in agent.notify_channel_ids or []
                         if (ref := _channel_ref(channel_by_id.get(channel_id)))
                     ],
-                    "config": agent.config or {},
+                    "config": _portable_agent_config(agent.config),
                 }
             )
 
@@ -367,9 +374,9 @@ def import_template(
     """导入配置包。默认 merge：仅更新/创建 payload 中包含的对象。"""
 
     if payload.version not in (1, 2):
-        raise HTTPException(400, f"不支持的配置包版本: {payload.version}")
+        raise api_error(400, "template_version_unsupported", f"不支持的配置包版本: {payload.version}")
     if mode not in ("merge", "replace"):
-        raise HTTPException(400, "mode 仅支持 merge/replace")
+        raise api_error(400, "template_mode_invalid", "mode 仅支持 merge/replace")
     selected = _selected_modules(modules, payload)
 
     updated_settings = 0
@@ -670,15 +677,17 @@ def import_template(
             row.enabled = False
             row.schedule = ""
         cfg = row.config or {}
+        imported_config = _portable_agent_config(a.config)
         if mode == "replace":
-            row.config = a.config or {}
+            row.config = imported_config
         else:
             # merge
-            if isinstance(cfg, dict) and isinstance(a.config, dict):
-                cfg.update(a.config)
-                row.config = cfg
+            if isinstance(cfg, dict):
+                merged_config = _portable_agent_config(cfg)
+                merged_config.update(imported_config)
+                row.config = merged_config
             else:
-                row.config = a.config or {}
+                row.config = imported_config
 
     # Stocks + StockAgents
     for s in payload.stocks if "watchlist" in selected else []:
@@ -811,7 +820,7 @@ def import_template(
     except IntegrityError as exc:
         db.rollback()
         logger.warning("配置包导入因无效关联回滚: %s", exc)
-        raise HTTPException(400, "配置包包含无效关联，导入已回滚") from exc
+        raise api_error(400, "template_reference_invalid", "配置包包含无效关联，导入已回滚") from exc
     logger.info(
         f"导入配置包 modules={','.join(sorted(selected))}: settings={updated_settings} "
         f"ai_services(+{created_ai_services}/~{updated_ai_services}) "
