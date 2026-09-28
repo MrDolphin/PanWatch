@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Check, Eye, EyeOff, Plus, Pencil, Trash2, Star, Send, Cpu, Play, Download, Upload, BarChart3, User, Radar, AlertTriangle } from 'lucide-react'
+import { Check, Eye, EyeOff, Plus, Pencil, Trash2, Star, Send, Cpu, Play, Download, Upload, BarChart3, User, Radar, AlertTriangle, Palette } from 'lucide-react'
 import { fetchAPI, type AIService, type AIModel, type NotifyChannel } from '@panwatch/api'
 import { useAvatar, saveAvatar, fileToAvatarDataUrl } from '@/hooks/use-avatar'
 import { buildTemplateImportFeedback, type TemplateImportSummary } from '@/lib/template-import-feedback'
@@ -12,6 +12,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@panwatch/base-ui/components/ui/select'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import { useTranslation } from 'react-i18next'
+import { useMarketColors } from '@/hooks/use-market-colors'
+import type { MarketColorPreference } from '@/lib/market-colors'
 
 interface Setting {
   key: string
@@ -187,6 +189,7 @@ const emptyChannelForm: ChannelForm = { name: '', type: 'telegram', config: {} }
 export default function SettingsPage() {
   const { t } = useTranslation(['configuration', 'common'])
   const configT = t as unknown as (key: string, options?: Record<string, unknown>) => string
+  const { preference: marketColorPreference, setPreference: setMarketColorPreference } = useMarketColors()
   const [settings, setSettings] = useState<Setting[]>([])
   const [services, setServices] = useState<AIService[]>([])
   const [channels, setChannels] = useState<NotifyChannel[]>([])
@@ -695,6 +698,7 @@ export default function SettingsPage() {
     { id: 'sec-notify', label: configT('configuration:settingsPage.nav.notifications'), hint: `${enabledChannels.length}/${channels.length} ${configT('configuration:settingsPage.hero.channelsEnabled')}` },
     { id: 'sec-system', label: configT('configuration:settingsPage.nav.system'), hint: health?.timezone ? `TZ ${health.timezone}` : undefined },
     { id: 'sec-feedback', label: configT('configuration:settingsPage.nav.feedback') },
+    { id: 'sec-appearance', label: configT('configuration:settingsPage.nav.appearance') },
     { id: 'sec-pat', label: configT('configuration:settingsPage.nav.pat') },
   ]
 
@@ -1034,7 +1038,7 @@ export default function SettingsPage() {
         )}
 
         {/* Feedback Stats */}
-        <section id="sec-feedback" className="card p-4 md:p-6 lg:col-span-12">
+        <section id="sec-feedback" className="card p-4 md:p-5 lg:col-span-7">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="text-[12px] md:text-[13px] font-semibold text-foreground">{configT('configuration:settingsPage.feedback.title')}</h3>
@@ -1081,6 +1085,46 @@ export default function SettingsPage() {
           ) : (
             <div className="text-[12px] text-muted-foreground">{configT('configuration:settingsPage.feedback.empty')}</div>
           )}
+        </section>
+
+        {/* Compact display preferences, grouped with lower-frequency feedback analytics. */}
+        <section id="sec-appearance" className="card p-4 md:p-5 lg:col-span-5">
+          <div className="flex items-start gap-2.5">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Palette className="h-3.5 w-3.5" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-[12px] md:text-[13px] font-semibold text-foreground">{configT('configuration:settingsPage.appearance.title')}</h3>
+              <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">{configT('configuration:settingsPage.appearance.description')}</p>
+            </div>
+          </div>
+          <div className="mt-3 space-y-1.5" role="radiogroup" aria-label={configT('configuration:settingsPage.appearance.marketColors')}>
+            {(['auto', 'red-up', 'green-up'] as MarketColorPreference[]).map(option => {
+              const active = marketColorPreference === option
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setMarketColorPreference(option)}
+                  className={`flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors ${active ? 'border-primary/40 bg-primary/5' : 'border-border/50 hover:border-primary/25 hover:bg-accent/20'}`}
+                >
+                  <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${active ? 'border-primary bg-primary text-primary-foreground' : 'border-border'}`}>
+                    {active ? <Check className="h-2.5 w-2.5" /> : null}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[11px] font-medium text-foreground">{configT(`configuration:settingsPage.appearance.options.${option}.label`)}</span>
+                    <span className="block truncate text-[9px] text-muted-foreground">{configT(`configuration:settingsPage.appearance.options.${option}.description`)}</span>
+                  </span>
+                  <span className="flex shrink-0 gap-1.5 font-mono text-[10px]">
+                    <span className={option === 'green-up' ? 'text-green-600 dark:text-green-400' : option === 'red-up' ? 'text-rose-600 dark:text-rose-400' : 'text-market-up'}>+2.35%</span>
+                    <span className={option === 'green-up' ? 'text-rose-600 dark:text-rose-400' : option === 'red-up' ? 'text-green-600 dark:text-green-400' : 'text-market-down'}>-1.18%</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
         </section>
 
         {/* MCP 访问令牌 */}

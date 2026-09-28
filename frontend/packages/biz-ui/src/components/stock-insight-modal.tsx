@@ -23,6 +23,8 @@ import StockPriceAlertPanel from '@panwatch/biz-ui/components/stock-price-alert-
 import { TechnicalBadge } from '@panwatch/biz-ui/components/technical-badge'
 import AddPositionCalculator from '@panwatch/biz-ui/components/add-position-calculator'
 import { useTranslation } from 'react-i18next'
+import { useMarketColors } from '@/hooks/use-market-colors'
+import { marketSignTextClass } from '@/lib/market-colors'
 
 interface QuoteResponse {
   symbol: string
@@ -344,6 +346,7 @@ export default function StockInsightModal(props: {
   hasPosition?: boolean
 }) {
   const { toast } = useToast()
+  const { palette } = useMarketColors()
   const { t, i18n } = useTranslation('bizUi')
   const tr = (key: string, options?: Record<string, unknown>) =>
     (t as unknown as (key: string, options?: Record<string, unknown>) => string)(`stockInsight.${key}`, options)
@@ -856,12 +859,12 @@ export default function StockInsightModal(props: {
 
   const quoteUp = (quote?.change_pct || 0) > 0
   const quoteDown = (quote?.change_pct || 0) < 0
-  const changeColor = quoteUp ? 'text-rose-500' : quoteDown ? 'text-emerald-500' : 'text-foreground'
-  const priceColor = quoteUp ? 'text-rose-500' : quoteDown ? 'text-emerald-500' : 'text-foreground'
+  const changeColor = quoteUp || quoteDown ? marketSignTextClass(quote?.change_pct) : 'text-foreground'
+  const priceColor = quoteUp || quoteDown ? marketSignTextClass(quote?.change_pct) : 'text-foreground'
   const levelColor = (value: number | null | undefined) => {
     if (value == null || quote?.prev_close == null) return 'text-foreground'
-    if (value > quote.prev_close) return 'text-rose-500'
-    if (value < quote.prev_close) return 'text-emerald-500'
+    if (value > quote.prev_close) return 'text-market-up'
+    if (value < quote.prev_close) return 'text-market-down'
     return 'text-foreground'
   }
   const badge = getMarketBadge(market, (code) => tr(`markets.${code}`))
@@ -997,8 +1000,8 @@ export default function StockInsightModal(props: {
     setImageExporting(true)
     try {
       const { marketLabel, price, chg, action, signal, reason, risks, technicalBrief, levelsBrief, source, ts } = shareCardPayload
-      const up = (quote?.change_pct || 0) >= 0
-      const changeColor = up ? '#ef4444' : '#10b981'
+      const change = quote?.change_pct || 0
+      const changeColor = change > 0 ? palette.up.bright : change < 0 ? palette.down.bright : palette.flat
       const svg = `
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
@@ -1062,7 +1065,7 @@ export default function StockInsightModal(props: {
     } finally {
       setImageExporting(false)
     }
-  }, [quote?.change_pct, resolvedName, shareCardPayload, symbol, toast])
+  }, [palette, quote?.change_pct, resolvedName, shareCardPayload, symbol, toast])
 
   const copyTextWithFallback = useCallback(async (text: string): Promise<boolean> => {
     if (!text) return false
@@ -1437,19 +1440,19 @@ export default function StockInsightModal(props: {
                       <div className="text-[11px] text-muted-foreground mb-2">{tr('holding.title')}</div>
                       {holdingAgg ? (
                         <div className="grid grid-cols-2 gap-2 text-[12px]">
-                          <div className="rounded bg-emerald-500/10 px-2 py-1.5">
+                          <div className="rounded bg-accent/20 px-2 py-1.5">
                             <div className="text-[10px] text-muted-foreground">{tr('holding.quantity')}</div>
                             <div className="font-mono">{holdingAgg.quantity}</div>
                           </div>
-                          <div className="rounded bg-emerald-500/10 px-2 py-1.5">
+                          <div className="rounded bg-accent/20 px-2 py-1.5">
                             <div className="text-[10px] text-muted-foreground">{tr('holding.cost')}</div>
                             <div
                               className={`font-mono ${
                                 quote?.current_price != null
                                   ? quote.current_price > holdingAgg.unitCost
-                                    ? 'text-rose-500'
+                                    ? 'text-market-up'
                                     : quote.current_price < holdingAgg.unitCost
-                                      ? 'text-emerald-500'
+                                      ? 'text-market-down'
                                       : 'text-foreground'
                                   : 'text-foreground'
                               }`}
@@ -1457,13 +1460,13 @@ export default function StockInsightModal(props: {
                               {formatNumber(holdingAgg.unitCost)}
                             </div>
                           </div>
-                          <div className="rounded bg-emerald-500/10 px-2 py-1.5">
+                          <div className="rounded bg-accent/20 px-2 py-1.5">
                             <div className="text-[10px] text-muted-foreground">{tr('holding.marketValue')}</div>
                             <div className="font-mono">{formatCompactNumber(holdingAgg.marketValue, english)}</div>
                           </div>
-                          <div className="rounded bg-emerald-500/10 px-2 py-1.5">
+                          <div className="rounded bg-accent/20 px-2 py-1.5">
                             <div className="text-[10px] text-muted-foreground">{tr('holding.pnl')}</div>
-                            <div className={`font-mono ${holdingAgg.pnl >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                            <div className={`font-mono ${marketSignTextClass(holdingAgg.pnl)}`}>
                               {holdingAgg.pnl >= 0 ? '+' : ''}{formatCompactNumber(holdingAgg.pnl, english)}
                             </div>
                           </div>
@@ -1513,8 +1516,9 @@ export default function StockInsightModal(props: {
                               const yClose = toY(Number(k.close))
                               const yHigh = toY(Number(k.high))
                               const yLow = toY(Number(k.low))
-                              const up = Number(k.close) >= Number(k.open)
-                              const color = up ? '#ef4444' : '#10b981'
+                              const close = Number(k.close)
+                              const open = Number(k.open)
+                              const color = close > open ? palette.up.bright : close < open ? palette.down.bright : palette.flat
                               const bodyTop = Math.min(yOpen, yClose)
                               const bodyH = Math.max(1.4, Math.abs(yOpen - yClose))
                               const active = miniHoverIdx === idx
@@ -1890,9 +1894,11 @@ export default function StockInsightModal(props: {
 }
 
 const DEEP_DECISION_COLOR: Record<string, string> = {
-  buy: 'text-emerald-600 dark:text-emerald-400',
+  buy: 'text-market-up',
+  add: 'text-market-up',
   hold: 'text-amber-600 dark:text-amber-400',
-  sell: 'text-rose-600 dark:text-rose-400',
+  reduce: 'text-market-down',
+  sell: 'text-market-down',
 }
 
 function DeepAnalysisSection({
@@ -2073,8 +2079,7 @@ function DeepHistoryComparison({
   const stats = history.stats
   const fmtPct = (v: number | null): string => (v == null ? '-' : `${(v * 100).toFixed(0)}%`)
   const fmtRet = (v: number | null): string => (v == null ? '-' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
-  const retCls = (v: number | null): string =>
-    v == null ? 'text-muted-foreground' : v > 0 ? 'text-emerald-600 dark:text-emerald-400' : v < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'
+  const retCls = (v: number | null): string => marketSignTextClass(v)
 
   return (
     <div className="rounded-lg border border-border/50 p-3 space-y-2">
@@ -2089,11 +2094,11 @@ function DeepHistoryComparison({
         </div>
         <div className="rounded bg-accent/30 px-2 py-1.5">
           <div className="text-muted-foreground">{tr('deep.buy', { count: stats.buy_count })}</div>
-          <div className="font-semibold text-emerald-600 dark:text-emerald-400">{fmtPct(stats.buy_hit_rate)}</div>
+          <div className="font-semibold text-market-up">{fmtPct(stats.buy_hit_rate)}</div>
         </div>
         <div className="rounded bg-accent/30 px-2 py-1.5">
           <div className="text-muted-foreground">{tr('deep.sell', { count: stats.sell_count })}</div>
-          <div className="font-semibold text-rose-600 dark:text-rose-400">{fmtPct(stats.sell_hit_rate)}</div>
+          <div className="font-semibold text-market-down">{fmtPct(stats.sell_hit_rate)}</div>
         </div>
         <div className="rounded bg-accent/30 px-2 py-1.5">
           <div className="text-muted-foreground">{tr('deep.avg20d')}</div>

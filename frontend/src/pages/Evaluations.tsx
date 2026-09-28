@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import { useTranslation } from 'react-i18next'
 import { localizeAgentName } from '@/i18n/agent-labels'
+import { marketSignTextClass } from '@/lib/market-colors'
 
 type FilterState = {
   agentName: string
@@ -55,8 +56,7 @@ function formatPct(value: number | null | undefined) {
 }
 
 function pctClass(value: number | null | undefined) {
-  if (value == null || value === 0) return 'text-muted-foreground'
-  return value > 0 ? 'text-rose-500' : 'text-emerald-500'
+  return marketSignTextClass(value)
 }
 
 function outcomeLabel(outcome: AgentPredictionOutcomeItem | undefined, t: (key: string) => string) {
@@ -68,7 +68,13 @@ function outcomeLabel(outcome: AgentPredictionOutcomeItem | undefined, t: (key: 
 
 function OutcomeCell({ outcome, t }: { outcome?: AgentPredictionOutcomeItem; t: (key: string) => string }) {
   if (!outcome || outcome.status === 'pending') return <span className="text-[12px] text-muted-foreground">{outcomeLabel(outcome, t)}</span>
-  return <div className="text-right"><div className={`font-mono text-[12px] ${pctClass(outcome.return_pct)}`}>{formatPct(outcome.return_pct)}</div><div className={`text-[10px] ${outcome.hit ? 'text-emerald-600' : 'text-muted-foreground'}`}>{outcomeLabel(outcome, t)}</div></div>
+  const hitClass = outcome.hit ? 'text-emerald-600' : 'text-muted-foreground' // market-color-fixed: evaluation success status
+  return (
+    <div className="text-right">
+      <div className={`font-mono text-[12px] ${pctClass(outcome.return_pct)}`}>{formatPct(outcome.return_pct)}</div>
+      <div className={`text-[10px] ${hitClass}`}>{outcomeLabel(outcome, t)}</div>
+    </div>
+  )
 }
 
 function SummaryCard({ label, value, hint, tone = 'default' }: { label: string; value: string; hint?: string; tone?: 'default' | 'positive' | 'warning' }) {

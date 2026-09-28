@@ -28,11 +28,14 @@ import { useTranslation } from 'react-i18next'
 import { buildAnalysisSections } from '@panwatch/biz-ui/analysis-sections'
 import ShareCardModal from '../components/ShareCardModal'
 import { normalizeSuggestionAction } from '@panwatch/biz-ui/components/suggestion-action'
+import { marketSignTextClass } from '@/lib/market-colors'
 
 const DECISION_COLOR: Record<string, string> = {
-  buy: 'text-rose-500',
+  buy: 'text-market-up',
+  add: 'text-market-up',
   hold: 'text-amber-500',
-  sell: 'text-emerald-500',
+  reduce: 'text-market-down',
+  sell: 'text-market-down',
 }
 
 /** 各 section 配图标(决策/技术/情绪/新闻/基本面/辩论/风控),与 buildAnalysisSections 的 id 对齐 */
@@ -57,8 +60,7 @@ function inferMarket(symbol: string): string {
 }
 
 function pctClass(v: number | null | undefined): string {
-  if (v == null) return 'text-muted-foreground'
-  return v > 0 ? 'text-rose-500' : v < 0 ? 'text-emerald-500' : 'text-muted-foreground'
+  return marketSignTextClass(v)
 }
 
 function fmtPct(v: number | null | undefined): string {
@@ -468,9 +470,9 @@ export default function AnalysisDetailPage() {
                       <div
                         className={`h-full rounded-full ${
                           sug.action === 'buy'
-                            ? 'bg-rose-500'
+                            ? 'bg-market-up'
                             : sug.action === 'sell'
-                              ? 'bg-emerald-500'
+                              ? 'bg-market-down'
                               : 'bg-amber-500'
                         }`}
                         style={{ width: `${Math.max(0, Math.min(100, sug.confidence * 10))}%` }}
