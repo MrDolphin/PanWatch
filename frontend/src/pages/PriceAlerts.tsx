@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import { useTranslation } from 'react-i18next'
 import PriceAlertFormDialog, { type AlertConditionItem, type PriceAlertFormState, type PriceAlertSubmitPayload } from '@panwatch/biz-ui/components/price-alert-form-dialog'
+import { getCurrentLocale } from '@/i18n'
 
 type RuleOp = 'and' | 'or'
 
@@ -65,7 +66,7 @@ function fmt(iso?: string | null): string {
   if (!iso) return '--'
   const d = new Date(iso)
   if (isNaN(d.getTime())) return '--'
-  return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return d.toLocaleString(getCurrentLocale(), { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 function conditionText(item: AlertConditionItem, translate: (key: string) => string): string {
@@ -80,7 +81,11 @@ function conditionText(item: AlertConditionItem, translate: (key: string) => str
 
 export default function PriceAlertsPage() {
   const { t } = useTranslation('configuration')
-  const alertT = t as unknown as (key: string, options?: Record<string, unknown>) => string
+  const alertT = (key: string, options?: Record<string, unknown>) =>
+    (t as unknown as (translationKey: string, interpolation?: Record<string, unknown>) => string)(
+      `priceAlerts.${key}`,
+      options,
+    )
   const { toast } = useToast()
   const location = useLocation()
   const [loading, setLoading] = useState(true)
@@ -256,7 +261,9 @@ export default function PriceAlertsPage() {
     try {
       const res = await fetchAPI<any>(`/price-alerts/${r.id}/test`, { method: 'POST' })
       const st = (res?.items || [])[0]?.status || 'unknown'
-      toast(alertT('messages.testDone', { status: st }), 'info')
+      toast(alertT('messages.testDone', {
+        status: alertT(`testStatuses.${st}`, { defaultValue: st }),
+      }), 'info')
     } catch (e) {
       toast(e instanceof Error ? e.message : alertT('messages.testFailed'), 'error')
     }

@@ -17,7 +17,7 @@ import { Switch } from '@panwatch/base-ui/components/ui/switch'
 import { SuggestionBadge, type KlineSummary, type SuggestionInfo } from '@panwatch/biz-ui/components/suggestion-badge'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import InteractiveKline from '@panwatch/biz-ui/components/InteractiveKline'
-import { KlineIndicators } from '@panwatch/biz-ui/components/kline-indicators'
+import { KlineIndicators, localizeTechnicalStatus } from '@panwatch/biz-ui/components/kline-indicators'
 import { buildKlineSuggestion } from '@/lib/kline-scorer'
 import StockPriceAlertPanel from '@panwatch/biz-ui/components/stock-price-alert-panel'
 import { TechnicalBadge } from '@panwatch/biz-ui/components/technical-badge'
@@ -152,17 +152,19 @@ function formatMarketCap(value: number | null | undefined, market?: string, engl
   if (!isFinite(n)) return '--'
   const m = String(market || '').toUpperCase()
   const abs = Math.abs(n)
+  const currency = m === 'US' ? 'USD' : m === 'HK' ? 'HKD' : 'CNY'
 
-  // Tencent CN quote data may already use units of CNY 100 million.
-  if (m === 'CN' && abs > 0 && abs < 100000) {
-    return english ? `${(n / 10).toFixed(2)}B CNY` : `${n.toFixed(2)}亿元`
+  // Quote providers normalize market capitalization in local-currency 100M units.
+  // Convert that unit before adding an English currency suffix for every market.
+  if (english) {
+    if (abs >= 10000) return `${(n / 10000).toFixed(2)}T ${currency}`
+    if (abs >= 10) return `${(n / 10).toFixed(2)}B ${currency}`
+    return `${(n * 100).toFixed(2)}M ${currency}`
   }
 
-  if (english && abs >= 1e9) return `${(n / 1e9).toFixed(2)}B CNY`
-  if (english && abs >= 1e6) return `${(n / 1e6).toFixed(2)}M CNY`
-  if (abs >= 1e8) return `${(n / 1e8).toFixed(2)}亿元`
-  if (abs >= 1e4) return `${(n / 1e4).toFixed(2)}万元`
-  return english ? `${n.toFixed(0)} CNY` : `${n.toFixed(0)}元`
+  if (m === 'US') return `${n.toFixed(2)}亿美元`
+  if (m === 'HK') return `${n.toFixed(2)}亿港元`
+  return `${n.toFixed(2)}亿元`
 }
 
 function formatTime(isoTime?: string, locale = 'zh-CN'): string {
@@ -819,13 +821,14 @@ export default function StockInsightModal(props: {
     }
     if (klineSummary) {
       const k = klineSummary as any
+      const technicalStatus = (value: string | null | undefined) => localizeTechnicalStatus(value, klineTr)
       const items = []
-      if (k.trend) items.push(english ? `Trend ${k.trend}` : `趋势${k.trend}`)
-      if (k.macd_status) items.push(`MACD${k.macd_status}`)
-      if (k.rsi_status) items.push(`RSI${k.rsi_status}${k.rsi6 != null ? `(${k.rsi6})` : ''}`)
-      if (k.kdj_status) items.push(`KDJ${k.kdj_status}`)
-      if (k.boll_status) items.push(`${english ? 'Bollinger ' : '布林'}${k.boll_status}`)
-      if (k.volume_trend) items.push(`${english ? 'Volume ' : '量能'}${k.volume_trend}${k.volume_ratio != null ? `(${k.volume_ratio}x)` : ''}`)
+      if (k.trend) items.push(english ? `Trend ${technicalStatus(k.trend)}` : `趋势${technicalStatus(k.trend)}`)
+      if (k.macd_status) items.push(`MACD ${technicalStatus(k.macd_status)}`)
+      if (k.rsi_status) items.push(`RSI ${technicalStatus(k.rsi_status)}${k.rsi6 != null ? ` (${k.rsi6})` : ''}`)
+      if (k.kdj_status) items.push(`KDJ ${technicalStatus(k.kdj_status)}`)
+      if (k.boll_status) items.push(`${english ? 'Bollinger ' : '布林'}${technicalStatus(k.boll_status)}`)
+      if (k.volume_trend) items.push(`${english ? 'Volume ' : '量能'}${technicalStatus(k.volume_trend)}${k.volume_ratio != null ? ` (${k.volume_ratio}x)` : ''}`)
       if (k.support != null) items.push(`${english ? 'Support ' : '支撑'}${k.support}`)
       if (k.resistance != null) items.push(`${english ? 'Resistance ' : '压力'}${k.resistance}`)
       if (items.length) parts.push(english ? `Technical: ${items.join(', ')}` : `技术面：${items.join('，')}`)
@@ -841,7 +844,7 @@ export default function StockInsightModal(props: {
     }
     if (suggestions.length > 0) {
       const lines = suggestions.slice(0, 3).map(s => `- [${s.agent_label || s.agent_name}] ${actionLabel(s.action, s.action_label)}: ${s.signal}`)
-      parts.push(`${english ? 'Recent AI suggestions' : '最近AI建议'}：\n${lines.join('\n')}`)
+      parts.push(`${english ? 'Recent AI suggestions:\n' : '最近AI建议：\n'}${lines.join('\n')}`)
     }
     if (holdingAgg) {
       parts.push(english

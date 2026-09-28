@@ -26,6 +26,7 @@ import { DeepAnalysisModal } from '@panwatch/biz-ui/components/deep-analysis-mod
 import StockPriceAlertPanel from '@panwatch/biz-ui/components/stock-price-alert-panel'
 import { useTranslation } from 'react-i18next'
 import { localizeAgentDescription, localizeAgentName } from '@/i18n/agent-labels'
+import { getCurrentLocale } from '@/i18n'
 
 interface AgentResult {
   success?: boolean
@@ -888,7 +889,7 @@ export default function StocksPage() {
     try {
       const d = new Date(iso)
       if (isNaN(d.getTime())) return iso
-      return d.toLocaleString('zh-CN', {
+      return d.toLocaleString(getCurrentLocale(), {
         timeZone: tz || undefined,
         month: '2-digit',
         day: '2-digit',
@@ -1412,6 +1413,8 @@ export default function StocksPage() {
   }
 
   const marketLabel = (m: string) => m === 'CN' ? stockT('stocksPage.markets.cn') : m === 'HK' ? stockT('stocksPage.markets.hk') : m === 'US' ? stockT('stocksPage.markets.us') : m
+  const marketStatusLabel = (status: string, fallback: string) =>
+    stockT(`stocksPage.marketStatus.${status}`, { defaultValue: fallback })
 
   // 市场徽章样式和短标签
   const marketBadge = (m: string) => {
@@ -1611,7 +1614,7 @@ export default function StocksPage() {
                 <>
                   <div className="w-px h-4 bg-border" />
                   <span className="text-[10px] text-muted-foreground/60">
-                    {lastRefreshTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    {lastRefreshTime.toLocaleTimeString(getCurrentLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                   </span>
                 </>
               )}
@@ -1658,16 +1661,17 @@ export default function StocksPage() {
               after_hours: 'bg-slate-400',
               closed: 'bg-slate-400',
             }
+            const localizedStatus = marketStatusLabel(m.status, m.status_text)
             return (
               <div
                 key={m.code}
                 className="shrink-0 flex items-center gap-1 md:gap-1.5"
-                title={`${m.sessions.join(', ')} (${m.local_time}) · ${m.status_text}`}
+                title={`${m.sessions.join(', ')} (${m.local_time}) · ${localizedStatus}`}
               >
                 <span className={`w-1.5 h-1.5 rounded-full ${statusColors[m.status] || 'bg-slate-400'}`} />
-                <span className="text-[11px] text-muted-foreground">{m.name}</span>
+                <span className="text-[11px] text-muted-foreground">{marketLabel(m.code)}</span>
                 <span className={`text-[10px] ${m.is_trading ? 'text-emerald-600' : 'text-muted-foreground/60'} hidden sm:inline`}>
-                  {m.status_text}
+                  {localizedStatus}
                 </span>
               </div>
             )
@@ -1696,7 +1700,7 @@ export default function StocksPage() {
           </div>
           {lastRefreshTime && (
             <span className="md:hidden shrink-0 text-[10px] text-muted-foreground/60 font-mono ml-1">
-              {lastRefreshTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              {lastRefreshTime.toLocaleTimeString(getCurrentLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
           )}
         </div>
@@ -2011,7 +2015,7 @@ export default function StocksPage() {
                               <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">{stockT('stocksPage.messages.pnl')}</th>
                               <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">{stockT('stocksPage.messages.today')}</th>
                               <th className="text-center px-4 py-2 text-[11px] font-semibold text-muted-foreground">{stockT('stocksPage.messages.style')}</th>
-                              <th className="text-left px-4 py-2 text-[11px] font-semibold text-muted-foreground">Agent</th>
+                              <th className="text-left px-4 py-2 text-[11px] font-semibold text-muted-foreground">{stockT('stocksPage.messages.agent')}</th>
                               <th className="text-center px-4 py-2 text-[11px] font-semibold text-muted-foreground">{stockT('stocksPage.messages.actions')}</th>
                             </tr>
                           </thead>
@@ -2321,7 +2325,7 @@ export default function StocksPage() {
                                     </button>
                                   ) : (
                                     <button onClick={() => stock && setAgentDialogStock(stock)} className="text-[10px] text-muted-foreground/50 flex items-center gap-1">
-                                      <Bot className="w-3 h-3" /> Agent
+                                      <Bot className="w-3 h-3" /> {stockT('stocksPage.messages.agent')}
                                     </button>
                                   )}
                                 </div>
@@ -2506,7 +2510,7 @@ export default function StocksPage() {
                     <div className="mt-2 pt-2 border-t border-border/30 flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1 flex-wrap">
                         {stock.agents && stock.agents.length > 0 ? (
-                          <Badge variant="secondary" className="text-[10px]">{stock.agents.length} Agent</Badge>
+                          <Badge variant="secondary" className="text-[10px]">{stockT('stocksPage.messages.agentCount', { count: stock.agents.length })}</Badge>
                         ) : (
                           <span className="text-[10px] text-muted-foreground/60">{stockT('stocksPage.messages.notConfigured')}</span>
                         )}

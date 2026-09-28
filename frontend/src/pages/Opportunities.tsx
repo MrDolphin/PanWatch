@@ -540,21 +540,21 @@ export default function OpportunitiesPage() {
           <div className="text-[11px] text-muted-foreground">{oppT('opportunities.currentCandidates')}</div>
           <div className="text-[18px] font-bold mt-1">{globalCoverage?.total_signals ?? '--'}</div>
           <div className="text-[10px] text-muted-foreground mt-1">
-            {oppT('opportunities.actionable')}: {globalCoverage?.active_signals ?? '--'}，{oppT('opportunities.watching')}: {(globalCoverage?.total_signals != null && globalCoverage?.active_signals != null) ? Math.max(0, globalCoverage.total_signals - globalCoverage.active_signals) : '--'}
+            {oppT('opportunities.actionable')}: {globalCoverage?.active_signals ?? '--'} · {oppT('opportunities.watching')}: {(globalCoverage?.total_signals != null && globalCoverage?.active_signals != null) ? Math.max(0, globalCoverage.total_signals - globalCoverage.active_signals) : '--'}
           </div>
         </div>
         <div className="card p-3">
           <div className="text-[11px] text-muted-foreground">{oppT('opportunities.marketPoolRatio')}</div>
           <div className="text-[18px] font-bold mt-1">{globalCoverage?.market_scan_share_pct != null ? `${globalCoverage.market_scan_share_pct.toFixed(1)}%` : '--'}</div>
           <div className="text-[10px] text-muted-foreground mt-1">
-            {oppT('opportunities.marketPool')}: {globalCoverage?.market_scan_signals ?? '--'}，{oppT('opportunities.watchPool')}: {globalCoverage?.watchlist_signals ?? '--'}，{oppT('opportunities.mixedPool')}: {globalCoverage?.mixed_signals ?? '--'}
+            {oppT('opportunities.marketPool')}: {globalCoverage?.market_scan_signals ?? '--'} · {oppT('opportunities.watchPool')}: {globalCoverage?.watchlist_signals ?? '--'} · {oppT('opportunities.mixedPool')}: {globalCoverage?.mixed_signals ?? '--'}
           </div>
         </div>
         <div className="card p-3">
           <div className="text-[11px] text-muted-foreground">{oppT('opportunities.filteredResult')}</div>
           <div className="text-[18px] font-bold mt-1">{filteredSummary.total}</div>
           <div className="text-[10px] text-muted-foreground mt-1">
-            {oppT('opportunities.unheld')}: {filteredSummary.unheld}，{oppT('opportunities.marketPool')}: {filteredSummary.marketPool}
+            {oppT('opportunities.unheld')}: {filteredSummary.unheld} · {oppT('opportunities.marketPool')}: {filteredSummary.marketPool}
           </div>
         </div>
         <div className="card p-3">
@@ -601,7 +601,7 @@ export default function OpportunitiesPage() {
           <div className="flex flex-wrap gap-2">
             {regimeSummary.map((r) => (
               <span key={`regime-${r.market}`} className={`text-[11px] px-2.5 py-1 rounded ${regimeToneClass(r.regime)}`}>
-                {oppT(`opportunities.markets.${r.market}`, { defaultValue: r.market })}: {r.label} · {oppT('opportunities.confidence')} {Math.round(r.confidence * 100)}%
+                {oppT(`opportunities.markets.${r.market}`, { defaultValue: r.market })}: {oppT(`opportunities.regimes.${r.regime}`, { defaultValue: r.regime })} · {oppT('opportunities.confidence')} {Math.round(r.confidence * 100)}%
               </span>
             ))}
             {riskSummary.map((r) => (
