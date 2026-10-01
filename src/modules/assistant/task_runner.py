@@ -149,6 +149,30 @@ class AssistantTaskRunner:
     def __init__(self, session_factory: Callable = SessionLocal) -> None:
         self._session_factory = session_factory
         self._tasks: dict[int, asyncio.Task] = {}
+        self._title_tasks: dict[int, asyncio.Task] = {}
+
+    def _schedule_title(self, conversation_id: int) -> None:
+        if conversation_id in self._title_tasks:
+            return
+        worker = asyncio.create_task(self._generate_title(conversation_id))
+        self._title_tasks[conversation_id] = worker
+        worker.add_done_callback(lambda _: self._title_tasks.pop(conversation_id, None))
+
+    async def _generate_title(self, conversation_id: int) -> None:
+        db = self._session_factory()
+        try:
+            await asyncio.wait_for(
+                AssistantService(AssistantRepository(db)).generate_conversation_title(conversation_id),
+                timeout=8,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A failed title summary must leave the completed answer intact.
+            db.rollback()
+            logger.info('Assistant title generation skipped: conversation_id=%s', conversation_id)
+        finally:
+            db.close()
 
     def start_message(self, task_id: int, conversation_id: int) -> None:
         self._start(
@@ -162,6 +186,10 @@ class AssistantTaskRunner:
             self._run_resume(task_id, conversation_id, checkpoint, decisions),
         )
 
+    def is_running(self, task_id: int) -> bool:
+        worker = self._tasks.get(task_id)
+        return worker is not None and not worker.done()
+
     def cancel(self, task_id: int) -> bool:
         worker = self._tasks.get(task_id)
         if worker is None or worker.done():
@@ -174,6 +202,7 @@ class AssistantTaskRunner:
         db = self._session_factory()
         try:
             repository = AssistantRepository(db)
+            repository.restore_waiting_notifications()
             tasks = repository.list_tasks_for_recovery()
             for task in tasks:
                 if task.status == TaskStatus.QUEUED.value:
@@ -424,12 +453,14 @@ class AssistantTaskRunner:
                 status=TaskStatus.RUNNING,
                 data=usage_data,
             )
-        service._repository.complete_task_with_message(
+        completed = service._repository.complete_task_with_message(
             task_id,
             conversation_id,
             result.answer,
             result_data=structured_result.model_dump(mode="json"),
         )
+        if completed is not None:
+            self._schedule_title(conversation_id)
 
     def _fail(self, service: AssistantService, task_id: int, error_code: str) -> None:
         descriptor = descriptor_for_code(error_code)

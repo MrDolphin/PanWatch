@@ -17,7 +17,7 @@ from pan_agent import (
     RunResult,
     RunStatus,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, PositiveInt
 from sqlalchemy.orm import Session
 
 from src.platform.ai.errors import descriptor_for_code
@@ -32,13 +32,18 @@ from .context_schemas import (
     ContextDetailDTO,
 )
 from .event_stream import subscribe_task_events
+from .exports import ContextExportError, ContextExportHistoryDTO, ContextExportJobDTO, ExportContextCommand
+from .export_jobs import ExportJobRepository, context_export_runner
 from .prompt import build_assistant_messages
 from .repository import AssistantRepository
 from .schemas import (
     ApprovalDecisionCommand,
+    AssistantActivityDTO,
+    ReadAssistantNotificationsCommand,
     ConversationDetailDTO,
     ConversationDTO,
     CreateConversationCommand,
+    RenameConversationCommand,
     ToolPermissionCommand,
 )
 from .service import (
@@ -399,6 +404,25 @@ async def stream_assistant_task_events(
     )
 
 
+@router.get("/active-tasks")
+def get_active_assistant_tasks(db: Session = Depends(get_db)):
+    from .repository import AssistantRepository
+    return AssistantRepository(db).get_active_tasks()
+
+
+@router.get("/activity", response_model=AssistantActivityDTO)
+def get_assistant_activity(service: AssistantService = Depends(get_assistant_service)) -> AssistantActivityDTO:
+    return service.get_activity()
+
+
+@router.post("/notifications/read")
+def read_assistant_notifications(
+    body: ReadAssistantNotificationsCommand,
+    service: AssistantService = Depends(get_assistant_service),
+) -> dict[str, int]:
+    return {"updated": service.read_notifications(ids=body.ids, through_id=body.through_id)}
+
+
 @router.get("/tasks/{task_id}")
 def get_assistant_task(
     task_id: int,
@@ -429,6 +453,9 @@ async def retry_assistant_task(
     service: AssistantService = Depends(get_assistant_service),
 ) -> dict:
     try:
+        if assistant_task_runner.is_running(task_id):
+            snapshot = service.get_task_snapshot(task_id)
+            return {**snapshot, "can_retry": False, "retry_blocked_reason": "worker_stopping"}
         snapshot = service.retry_task(task_id)
         if snapshot["status"] == TaskStatus.QUEUED.value:
             assistant_task_runner.start_message(task_id, snapshot["conversation_id"])
@@ -691,6 +718,81 @@ def get_conversation(
         return service.get_conversation(conversation_id)
     except AssistantNotFoundError as exc:
         raise api_error(404, "assistant_resource_not_found", "助手资源不存在") from exc
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationDTO)
+def rename_conversation(
+    conversation_id: int,
+    body: RenameConversationCommand,
+    service: AssistantService = Depends(get_assistant_service),
+) -> ConversationDTO:
+    try:
+        return service.rename_conversation(conversation_id, body)
+    except AssistantNotFoundError as exc:
+        raise api_error(404, 'assistant_resource_not_found', '助手资源不存在') from exc
+
+
+@router.post('/conversations/{conversation_id}/export', response_model=ContextExportJobDTO, status_code=202)
+async def export_conversation_context(
+    conversation_id: int,
+    body: ExportContextCommand,
+    service: AssistantService = Depends(get_assistant_service),
+) -> ContextExportJobDTO:
+    try:
+        repository = ExportJobRepository(service._repository.session)
+        job = repository.create(conversation_id, body.language)
+        snapshot = repository.dto(job)
+        if job.status == 'queued':
+            context_export_runner.start(job.id)
+        return snapshot
+    except AssistantNotFoundError as exc:
+        raise api_error(404, 'assistant_resource_not_found', '助手资源不存在') from exc
+    except ContextExportError as exc:
+        raise api_error(422 if exc.code != 'assistant_export_invalid' else 502, exc.code, str(exc)) from exc
+
+
+@router.get('/exports', response_model=ContextExportHistoryDTO)
+def list_context_exports(
+    conversation_id: int | None = Query(None, ge=1),
+    before_id: int | None = Query(None, ge=1),
+    ids: list[PositiveInt] | None = Query(None, max_length=50),
+    limit: int = Query(20, ge=1, le=50),
+    service: AssistantService = Depends(get_assistant_service),
+):
+    try:
+        if conversation_id is not None:
+            service._require_conversation(conversation_id)
+        return ExportJobRepository(service._repository.session).history(
+            conversation_id=conversation_id, before_id=before_id, ids=ids, limit=limit,
+        )
+    except AssistantNotFoundError as exc:
+        raise api_error(404, 'assistant_resource_not_found', '助手资源不存在') from exc
+
+
+@router.get('/exports/{export_id}', response_model=ContextExportJobDTO)
+async def get_context_export(export_id: int, service: AssistantService = Depends(get_assistant_service)):
+    try:
+        repository = ExportJobRepository(service._repository.session)
+        job = repository.get(export_id)
+        snapshot = repository.dto(job)
+        if job.status == 'queued':
+            context_export_runner.start(job.id)
+        return snapshot
+    except LookupError as exc:
+        raise api_error(404, 'assistant_resource_not_found', '助手资源不存在') from exc
+
+
+@router.post('/exports/{export_id}/retry', response_model=ContextExportJobDTO, status_code=202)
+async def retry_context_export(export_id: int, service: AssistantService = Depends(get_assistant_service)):
+    try:
+        repository = ExportJobRepository(service._repository.session)
+        job = repository.retry(export_id)
+        snapshot = repository.dto(job)
+        if job.status == 'queued':
+            context_export_runner.start(job.id)
+        return snapshot
+    except LookupError as exc:
+        raise api_error(404, 'assistant_resource_not_found', '助手资源不存在') from exc
 
 
 @router.delete("/conversations/{conversation_id}")

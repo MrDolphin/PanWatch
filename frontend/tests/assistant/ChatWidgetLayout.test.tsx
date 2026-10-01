@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { chatApi, fetchAPI } from '@panwatch/api'
 import ChatWidget from '@/components/ChatWidget'
+import i18n from '@/i18n'
 
 vi.mock('@panwatch/api', () => ({
   fetchAPI: vi.fn(),
@@ -29,15 +30,45 @@ vi.mock('@panwatch/api', () => ({
     sendMessage: vi.fn(),
     sendAssistantMessageStream: vi.fn().mockResolvedValue(undefined),
     decideAssistantApprovalStream: vi.fn().mockResolvedValue(undefined),
+    cancelAssistantTask: vi.fn(),
+    retryAssistantTask: vi.fn(),
   },
 }))
 
 beforeEach(() => {
-  vi.clearAllMocks()
+  vi.resetAllMocks()
+  vi.mocked(chatApi.listConversations).mockResolvedValue([])
+  vi.mocked(chatApi.createConversation).mockResolvedValue({ id: 1, title: '', stock_symbol: null, stock_market: null, created_at: '2026-09-12T00:00:00Z' })
+  vi.mocked(chatApi.getConversation).mockResolvedValue({
+    conversation: { id: 1, title: '', stock_symbol: null, stock_market: null, created_at: '2026-09-12T00:00:00Z' }, messages: [],
+  })
+  vi.mocked(chatApi.getAssistantTask).mockRejectedValue(new Error('No task fixture'))
+  vi.mocked(chatApi.subscribeAssistantTaskStream).mockResolvedValue(undefined)
+  vi.mocked(chatApi.sendAssistantMessageStream).mockResolvedValue(undefined)
+  vi.mocked(chatApi.decideAssistantApprovalStream).mockResolvedValue(undefined)
   sessionStorage.clear()
 })
 
 describe('ChatWidget layout', () => {
+  it.each([
+    ['zh-CN', 'tool_search', '正在查找可用工具…'],
+    ['en-US', 'tool_search', 'Finding available tools…'],
+    ['zh-CN', 'search_stocks', '正在调用 股票搜索…'],
+    ['zh-CN', 'custom_research_tool', '正在调用 custom_research_tool…'],
+    ['en-US', 'custom_research_tool', 'Calling custom_research_tool…'],
+  ])('localizes live tool status in %s for %s', async (language, name, expected) => {
+    await i18n.changeLanguage(language)
+    vi.mocked(chatApi.sendAssistantMessageStream).mockImplementation(async (_conversationId, _content, callbacks, signal) => {
+      callbacks.onRunStarted?.({ taskId: 43 })
+      callbacks.onToolCallStart?.({ name, arguments: {} })
+      await new Promise<void>(resolve => signal?.addEventListener('abort', () => resolve(), { once: true }))
+    })
+    const user = userEvent.setup()
+    render(<ChatWidget embedded />)
+    await user.click(screen.getByRole('button', { name: i18n.t('assistantPage.welcome.diagnosePortfolio', { ns: 'configuration' }) }))
+    expect(await screen.findByText(expected)).toBeTruthy()
+  })
+
   it('reconnects a running durable task after a refresh', async () => {
     sessionStorage.setItem('panwatch:assistant-task:1', '88')
     vi.mocked(chatApi.getAssistantTask)
@@ -68,6 +99,7 @@ describe('ChatWidget layout', () => {
       88,
       expect.any(Object),
       expect.any(AbortSignal),
+      0,
     ))
     await screen.findByText('后台任务已完成')
     await waitFor(() => expect(sessionStorage.getItem('panwatch:assistant-task:1')).toBeNull())
@@ -141,6 +173,7 @@ describe('ChatWidget layout', () => {
       1,
       '分析 CN:600519 贵州茅台 的基本面、行情和近期新闻',
       expect.any(Object),
+      expect.any(AbortSignal),
     )
   })
 
@@ -161,7 +194,7 @@ describe('ChatWidget layout', () => {
     expect(messageList.className).toContain('min-h-0')
     expect(messageList.className).toContain('overflow-y-auto')
     expect(composer.className).toContain('shrink-0')
-    expect(composer.className).toContain('env(safe-area-inset-bottom)')
+    expect(composer.className).not.toContain('env(safe-area-inset-bottom)')
     expect(composer.className).toContain('sm:px-4')
   })
 
@@ -188,6 +221,7 @@ describe('ChatWidget layout', () => {
       scrollTop: { configurable: true, value: 0, writable: true },
       clientHeight: { configurable: true, value: 500, writable: true },
     })
+    fireEvent.wheel(messageList, { deltaY: -200 })
     fireEvent.scroll(messageList)
 
     const scrollButton = await screen.findByRole('button', { name: '回到底部' })
@@ -294,6 +328,47 @@ describe('ChatWidget layout', () => {
     expect(sessionStorage.getItem('panwatch:assistant-task:1')).toBeNull()
   })
 
+  it('opens AI settings from an authentication failure restored with the conversation', async () => {
+    const onNavigate = vi.fn()
+    vi.mocked(chatApi.getConversation).mockResolvedValue({
+      conversation: { id: 1, title: '', stock_symbol: null, stock_market: null, created_at: '' }, messages: [],
+      latest_task: { id: 91, conversation_id: 1, status: 'failed', error_code: 'ai_authentication_failed', can_retry: true, pending_approvals: [] },
+    })
+    render(<ChatWidget embedded conversationIdFromUrl={1} onNavigate={onNavigate} onConversationChange={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: '检查 AI 设置' }))
+    expect(onNavigate).toHaveBeenCalledWith('/settings')
+    expect(screen.queryByRole('button', { name: '重试任务' })).toBeNull()
+  })
+
+  it('shows operation evidence for a stopped task and prevents replay', async () => {
+    const user = userEvent.setup()
+    vi.mocked(chatApi.getConversation).mockResolvedValue({
+      conversation: { id: 1, title: '', stock_symbol: null, stock_market: null, created_at: '' }, messages: [],
+      latest_task: {
+        id: 91, conversation_id: 1, status: 'cancelled', can_retry: false, retry_blocked_reason: 'tools_already_started', pending_approvals: [],
+        trace: [{ id: 5, event: 'tool_result', data: { name: 'create_price_alert', ok: true, preview: '创建了提醒 alert-1' } }, { id: 6, event: 'cancelled', data: {} }],
+      },
+    })
+    render(<ChatWidget embedded conversationIdFromUrl={1} onConversationChange={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: '查看已执行操作' }))
+    expect(await screen.findByText('创建了提醒 alert-1')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '重试任务' })).toBeNull()
+    expect((screen.getByPlaceholderText('输入问题...') as HTMLInputElement).disabled).toBe(false)
+  })
+
+  it('prefills the failed question for revision without submitting it again', async () => {
+    const user = userEvent.setup()
+    vi.mocked(chatApi.getConversation).mockResolvedValue({
+      conversation: { id: 1, title: '', stock_symbol: null, stock_market: null, created_at: '' },
+      messages: [{ id: 1, role: 'user', content: '请分析所有股票', created_at: '' }],
+      latest_task: { id: 91, conversation_id: 1, status: 'failed', error_code: 'step_limit', can_retry: true, pending_approvals: [] },
+    })
+    render(<ChatWidget embedded conversationIdFromUrl={1} onConversationChange={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: '修改问题' }))
+    expect((screen.getByPlaceholderText('输入问题...') as HTMLInputElement).value).toBe('请分析所有股票')
+    expect(chatApi.sendAssistantMessageStream).not.toHaveBeenCalled()
+  })
+
   it('does not downgrade the embedded assistant to the legacy non-streaming endpoint', async () => {
     const user = userEvent.setup()
     vi.mocked(chatApi.sendAssistantMessageStream).mockRejectedValueOnce(new Error('SSE unavailable'))
@@ -352,6 +427,7 @@ describe('ChatWidget layout', () => {
       'approved',
       expect.any(Object),
       42,
+      expect.any(AbortSignal),
     )
   })
 })

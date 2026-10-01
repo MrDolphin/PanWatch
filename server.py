@@ -22,6 +22,7 @@ from src.platform.persistence.models import (
 from src.platform.observability.log_handler import DBLogHandler
 from src.platform.runtime.config import Settings, AppConfig, StockConfig
 from src.platform.marketdata.models import MarketCode
+from src.platform.marketdata.javascript_runtime import warmup_javascript_runtime
 from src.platform.ai.ai_client import AIClient
 from src.platform.ai.ai_failover import build_failover_client
 from src.platform.notifications.notifier import NotifierManager
@@ -1486,6 +1487,9 @@ async def lifespan(app):
     setup_proxy()  # 设置进程 env 代理(HTTP_PROXY/NO_PROXY);所有 httpx(trust_env=True)据此走代理
     setup_ssl()
     setup_playwright()
+    # Complete V8's first isolate initialization before market data workers race
+    # to create their first MiniRacer contexts (native fatal on macOS).
+    warmup_javascript_runtime()
 
     # 从环境变量初始化认证（Docker 部署用）
     from src.modules.administration.api.auth import init_auth_from_env
@@ -1581,23 +1585,28 @@ async def lifespan(app):
         register_mcp_log_cleanup(scheduler)
     except Exception as e:
         logger.error(f"MCP 日志清理任务注册失败: {e}")
-    yield
-    if scheduler:
-        scheduler.shutdown()
-        logger.info("Agent 调度器已关闭")
-    if price_alert_scheduler:
-        price_alert_scheduler.shutdown()
-        logger.info("价格提醒调度器已关闭")
-    if paper_trading_scheduler:
-        paper_trading_scheduler.shutdown()
-        logger.info("模拟盘调度器已关闭")
-    if context_maintenance_scheduler:
-        context_maintenance_scheduler.shutdown()
-        logger.info("上下文维护调度器已关闭")
+    try:
+        # Preserve FastAPI's original lifespan, including registered recovery
+        # hooks. Database initialization must precede this context.
+        async with application_lifespan(app):
+            yield
+    finally:
+        if scheduler:
+            scheduler.shutdown()
+            logger.info("Agent 调度器已关闭")
+        if price_alert_scheduler:
+            price_alert_scheduler.shutdown()
+            logger.info("价格提醒调度器已关闭")
+        if paper_trading_scheduler:
+            paper_trading_scheduler.shutdown()
+            logger.info("模拟盘调度器已关闭")
+        if context_maintenance_scheduler:
+            context_maintenance_scheduler.shutdown()
+            logger.info("上下文维护调度器已关闭")
 
 
 # 模块级 app 实例，供 uvicorn reload 使用
-from src.bootstrap.application import app  # noqa: E402
+from src.bootstrap.application import app, application_lifespan  # noqa: E402
 
 app.router.lifespan_context = lifespan
 

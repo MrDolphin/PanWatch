@@ -1,14 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowDown, ChevronLeft, MessageCircle, Menu, Send, Settings2, Trash2, X, XCircle } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { ArrowDown, ChevronLeft, MessageCircle, Menu, Send, Settings2, X, XCircle } from 'lucide-react'
 import {
   chatApi,
-  type AssistantApproval,
   type AssistantContextDetail,
   type AssistantContextSnapshot,
-  type AssistantStreamError,
   type AssistantTraceEvent,
+  type AssistantTaskStatus,
   type ChatConversation,
   type ChatMessage,
 } from '@panwatch/api'
@@ -23,6 +20,13 @@ import { TraceTimeline } from '@/components/assistant/TraceTimeline'
 import { useChatAutoScroll } from '@/hooks/useChatAutoScroll'
 import { useTranslation } from 'react-i18next'
 import { AssistantResultCard } from '@/components/assistant/AssistantResultCard'
+import { useAssistantTask, isActiveTask } from '@/hooks/useAssistantTask'
+import { AssistantTaskBar } from '@/components/assistant/AssistantTaskBar'
+import { AssistantMarkdown } from '@/components/assistant/AssistantMarkdown'
+import { AssistantConversationActions } from '@/components/assistant/AssistantConversationActions'
+import { AssistantTaskIndicator } from '@/components/assistant/AssistantTaskIndicator'
+import { useActiveAssistantTasks } from '@/components/notifications/NotificationProvider'
+import { ASSISTANT_ACTIVITY_CHANGED } from '@/lib/assistant-activity'
 
 interface StockContext {
   symbol: string
@@ -47,46 +51,6 @@ interface ChatWidgetProps {
   onNavigate?: (path: string) => void
 }
 
-function taskStorageKey(conversationId: number): string {
-  return 'panwatch:assistant-task:' + conversationId
-}
-
-function approvalFromSnapshot(approval: {
-  id: string
-  tool_name: string
-  risk: AssistantApproval['risk']
-  presentation: { tool_title?: string; summary?: string }
-  expires_at: string
-}): AssistantApproval {
-  return {
-    id: approval.id,
-    tool_title: approval.presentation?.tool_title || approval.tool_name,
-    risk: approval.risk,
-    summary: approval.presentation?.summary || ('Execute ' + approval.tool_name),
-    expires_at: approval.expires_at,
-    status: 'pending',
-  }
-}
-
-// 工具名 → 过程可视化文案
-const TOOL_LABELS: Record<string, string> = {
-  get_portfolio: 'get_portfolio', get_stock_quote: 'get_stock_quote', get_kline_summary: 'get_kline_summary', get_stock_news: 'get_stock_news', create_price_alert: 'create_price_alert', get_technical_analysis: 'get_technical_analysis', get_stock_suggestions: 'get_stock_suggestions', get_watchlist: 'get_watchlist',
-}
-
-/** 增量渲染容错：流式文本里未闭合的代码围栏先乐观闭合，避免 markdown 渲染爆版式 */
-function safeStreamMarkdown(text: string): string {
-  const fences = (text.match(/```/g) || []).length
-  return fences % 2 === 1 ? `${text}\n\`\`\`` : text
-}
-
-function assistantFailureText(
-  assistantT: (key: string, options?: Record<string, unknown>) => string,
-  error: Pick<AssistantStreamError, 'code' | 'message'>,
-): string {
-  const fallback = error.message || assistantT('assistantPage.requestFailed')
-  return assistantT(`assistantPage.errors.${error.code}`, { defaultValue: fallback })
-}
-
 function requestFailureText(
   assistantT: (key: string, options?: Record<string, unknown>) => string,
   error: unknown,
@@ -108,10 +72,13 @@ export default function ChatWidget({
   const [open, setOpen] = useState(embedded)
   const [conversations, setConversations] = useState<ChatConversation[]>([])
   const [conversationsLoaded, setConversationsLoaded] = useState(false)
+  const conversationRequest = useRef(0)
+  const backgroundTasks = useActiveAssistantTasks()
   const [activeConvId, setActiveConvId] = useState<number | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
-  const [sending, setSending] = useState(false)
+  const [creatingConversation, setCreatingConversation] = useState(false)
+  const [reviewRequest, setReviewRequest] = useState(0)
   const [view, setView] = useState<'list' | 'chat'>('list')
   const [stockContext, setStockContext] = useState<StockContext | null>(null)
   const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([])
@@ -124,9 +91,6 @@ export default function ChatWidget({
     steps: { id: number; title: string; status: string }[]
     current?: number
   } | null>(null)
-  const [taskId, setTaskId] = useState<number | null>(null)
-  const [pendingApprovals, setPendingApprovals] = useState<AssistantApproval[]>([])
-  const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(null)
   const [permissionsOpen, setPermissionsOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [contextDetail, setContextDetail] = useState<AssistantContextDetail | null>(null)
@@ -147,10 +111,7 @@ export default function ChatWidget({
   // React state updates are batched; this synchronous guard closes the small
   // window where two clicks could otherwise create duplicate tasks/messages.
   const sendingRef = useRef(false)
-  const setActiveConversationId = useCallback((conversationId: number | null) => {
-    activeConvIdRef.current = conversationId
-    setActiveConvId(conversationId)
-  }, [])
+  const interactionLockedRef = useRef(false)
   const {
     scrollBoxRef,
     followNewContent,
@@ -166,9 +127,13 @@ export default function ChatWidget({
     if (rafRef.current == null) {
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null
-        setStreamText(tokenBufRef.current)
+        setStreamText(tokenBufRef.current.trimEnd())
       })
     }
+  }, [])
+
+  useEffect(() => () => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
   }, [])
 
   const resetStream = useCallback(() => {
@@ -191,14 +156,23 @@ export default function ChatWidget({
   }, [])
 
   const loadConversations = useCallback(async () => {
+    const request = ++conversationRequest.current
     try {
       const list = await chatApi.listConversations(30)
-      setConversations(list)
+      if (conversationRequest.current === request) setConversations(list)
     } catch {
       // ignore
     } finally {
-      setConversationsLoaded(true)
+      if (conversationRequest.current === request) setConversationsLoaded(true)
     }
+  }, [])
+
+  useEffect(() => () => { conversationRequest.current++ }, [])
+
+  const renameConversation = useCallback(async (conversationId: number, title: string) => {
+    const updated = await chatApi.renameConversation(conversationId, title)
+    conversationRequest.current++ // Discard older list requests after a rename.
+    setConversations(previous => previous.map(item => item.id === conversationId ? updated : item))
   }, [])
 
   const loadMessages = useCallback(async (convId: number) => {
@@ -206,10 +180,93 @@ export default function ChatWidget({
       const detail = await chatApi.getConversation(convId)
       if (activeConvIdRef.current !== convId) return
       setMessages(detail.messages)
+      return detail
     } catch {
       // ignore
     }
   }, [])
+
+  const task = useAssistantTask({
+    onResetStream: resetStream,
+    onReloadMessages: loadMessages,
+    onTrace: appendTrace,
+    onToken: (token) => { setStreamTool(null); pushToken(token) },
+    onToolCallStart: ({ name }) => {
+      tokenBufRef.current = ''
+      setStreamText('')
+      const toolName = assistantT(`p4.components.trace.tools.${name}`, { defaultValue: name })
+      setStreamTool(assistantT(`assistantPage.tools.${name}`, {
+        defaultValue: assistantT('assistantPage.callingTool', { name: toolName }),
+      }))
+    },
+    onPlan: (next) => { setStreamTool(null); setPlan(next) },
+    onRunStarted: ({ contextUsage }) => {
+      if (contextUsage) setContextDetail((previous) => previous ? { ...previous, usage: contextUsage, status: contextUsage.state } : previous)
+    },
+    onContextPrepared: ({ compressedMessageCount, compressionStatus, mode, usageAfter, usageBefore }) => {
+      setContextDetail((previous) => previous ? {
+        ...previous, usage: usageAfter, status: usageAfter.state,
+        last_compression: {
+          status: compressionStatus, mode, usage_before: usageBefore, usage_after: usageAfter,
+          saved_tokens: Math.max(0, usageBefore.total_tokens - usageAfter.total_tokens),
+          saved_percent: Math.round(Math.max(0, usageBefore.total_tokens - usageAfter.total_tokens) / Math.max(usageBefore.total_tokens, 1) * 100),
+          compressed_message_count: compressedMessageCount,
+        },
+      } : previous)
+    },
+    onDone: (message) => {
+      const completedTrace = traceEventsRef.current
+      setMessages((previous) => previous.some((item) => item.id === message.message_id) ? previous : [...previous, {
+        id: message.message_id || Date.now() + 1,
+        role: 'assistant', content: message.content,
+        created_at: message.created_at || new Date().toISOString(),
+        trace: completedTrace.length > 0 ? completedTrace : undefined,
+        result: message.result,
+      }])
+      traceEventsRef.current = []
+      setTraceEvents([])
+      setReviewRequest(0)
+      requestAnimationFrame(() => inputRef.current?.focus())
+    },
+  })
+  const { pendingApprovals } = task
+  const taskStatuses: Record<number, AssistantTaskStatus> = Object.fromEntries(backgroundTasks.map(item => [item.conversation_id, item.status]))
+  const backgroundCurrentTask = backgroundTasks.find(item => item.conversation_id === activeConvId)
+  if (task.snapshot && activeConvId && (!backgroundCurrentTask || backgroundCurrentTask.id <= task.snapshot.id)) {
+    if (isActiveTask(task.snapshot.status)) taskStatuses[activeConvId] = task.snapshot.status
+    else delete taskStatuses[activeConvId]
+  }
+  if (task.sending && activeConvId && !taskStatuses[activeConvId]) taskStatuses[activeConvId] = 'pending'
+  const activitySignature = JSON.stringify([backgroundTasks.map(item => [item.id, item.status]), task.snapshot?.id, task.snapshot?.status])
+  useEffect(() => {
+    if (!open) return
+    const refresh = () => { if (document.visibilityState !== 'hidden') void loadConversations() }
+    refresh()
+    // Metadata can arrive after the completed answer. Catch the bounded
+    // title summary, then stop polling once the conversation is idle.
+    const timers = [1000, 4000, 10_000].map(delay => setTimeout(refresh, delay))
+    const interval = backgroundTasks.length || task.sending ? setInterval(refresh, 5000) : undefined
+    window.addEventListener('focus', refresh)
+    window.addEventListener(ASSISTANT_ACTIVITY_CHANGED, refresh)
+    return () => {
+      timers.forEach(clearTimeout); clearInterval(interval)
+      window.removeEventListener('focus', refresh)
+      window.removeEventListener(ASSISTANT_ACTIVITY_CHANGED, refresh)
+    }
+  }, [open, activitySignature, task.sending, loadConversations])
+  const sending = creatingConversation || task.sending
+  const setActiveConversationId = useCallback((conversationId: number | null) => {
+    if (activeConvIdRef.current !== conversationId) {
+      task.reset(conversationId)
+      traceEventsRef.current = []
+      setTraceEvents([])
+      setReviewRequest(0)
+      setCreatingConversation(false)
+      sendingRef.current = false
+    }
+    activeConvIdRef.current = conversationId
+    setActiveConvId(conversationId)
+  }, [task.reset])
 
   useEffect(() => {
     const conversationId = activeConvId
@@ -276,8 +333,6 @@ export default function ChatWidget({
     setOpen(true)
     setStockContext(detail)
     setSuggestedQuestions([])
-    setTaskId(null)
-    setPendingApprovals([])
     resetFollowing()
 
     chatApi.createConversation({
@@ -313,159 +368,15 @@ export default function ChatWidget({
     }
   }, [open, loadConversations])
 
-  useEffect(() => {
-    if (!activeConvId) return
-    // The conversation id is assigned while the initial send is still in
-    // flight. Do not mistake the task created by this same render for a
-    // refresh recovery candidate and clear its live approval state.
-    if (sendingRef.current) return
-    const conversationId = activeConvId
-    const storageKey = taskStorageKey(conversationId)
-    const storedTaskId = Number(sessionStorage.getItem(storageKey))
-    if (!Number.isInteger(storedTaskId) || storedTaskId <= 0) return
-
-    let cancelled = false
-    const controller = new AbortController()
-    const isCurrent = () => !cancelled && activeConvIdRef.current === conversationId
-    const clearTask = () => {
-      setTaskId(null)
-      setPendingApprovals([])
-      sessionStorage.removeItem(storageKey)
-    }
-    const restoreSnapshot = async (snapshot: Awaited<ReturnType<typeof chatApi.getAssistantTask>>) => {
-      if (!isCurrent() || snapshot.conversation_id !== conversationId) return
-
-      if (snapshot.status === 'awaiting_approval') {
-        const approvals = snapshot.pending_approvals.map(approvalFromSnapshot)
-        if (approvals.length === 0) {
-          clearTask()
-          return
-        }
-        setTaskId(snapshot.id)
-        setPendingApprovals(approvals)
-        setSending(false)
-        sendingRef.current = false
-        return
-      }
-
-      if (snapshot.status === 'queued' || snapshot.status === 'running') {
-        setTaskId(snapshot.id)
-        setSending(true)
-        sendingRef.current = true
-        resetStream()
-
-        try {
-          await chatApi.subscribeAssistantTaskStream(snapshot.id, {
-            onTaskCreated: (taskId) => {
-              if (isCurrent()) setTaskId(taskId)
-            },
-            onRunStarted: ({ taskId: nextTaskId }) => {
-              if (isCurrent() && nextTaskId > 0) setTaskId(nextTaskId)
-            },
-            onToken: (token) => {
-              if (isCurrent()) pushToken(token)
-            },
-            onToolCallStart: ({ name }) => {
-              if (!isCurrent()) return
-              tokenBufRef.current = ''
-              setStreamText('')
-              setStreamTool(assistantT(`assistantPage.tools.${TOOL_LABELS[name] || name}`, { defaultValue: `Calling ${name}…` }))
-            },
-            onToolResult: () => undefined,
-            onTrace: (event) => {
-              if (isCurrent()) appendTrace(event)
-            },
-            onApprovalRequired: (approval) => {
-              if (isCurrent()) {
-                setPendingApprovals((previous) => (
-                  previous.some((item) => item.id === approval.id) ? previous : [...previous, approval]
-                ))
-              }
-            },
-            onPaused: ({ taskId: pausedTaskId }) => {
-              if (isCurrent() && pausedTaskId > 0) setTaskId(pausedTaskId)
-            },
-            onDone: () => undefined,
-            onError: () => undefined,
-          }, controller.signal)
-        } catch {
-          // The durable task remains recoverable. Re-read its state below so a
-          // transient browser/proxy failure cannot discard the task marker.
-        }
-
-        if (!isCurrent()) return
-        const latest = await chatApi.getAssistantTask(snapshot.id).catch(() => null)
-        if (!latest || latest.conversation_id !== conversationId) return
-        if (latest.status === 'awaiting_approval') {
-          setPendingApprovals(latest.pending_approvals.map(approvalFromSnapshot))
-          setTaskId(latest.id)
-        } else if (latest.status === 'completed') {
-          await loadMessages(conversationId)
-          clearTask()
-        } else if (latest.status === 'failed' || latest.status === 'cancelled') {
-          setMessages((previous) => [...previous, {
-            id: Date.now() + 1,
-            role: 'assistant',
-            content: assistantFailureText(assistantT, {
-              code: latest.error_code || 'assistant_unknown_error',
-              message: assistantT('assistantPage.requestFailed'),
-            }),
-            created_at: new Date().toISOString(),
-          }])
-          clearTask()
-        }
-        if (isCurrent()) {
-          sendingRef.current = false
-          setSending(false)
-        }
-        return
-      }
-
-      if (snapshot.status === 'completed') {
-        await loadMessages(conversationId)
-      } else if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
-        setMessages((previous) => [...previous, {
-          id: Date.now() + 1,
-          role: 'assistant',
-          content: assistantFailureText(assistantT, {
-            code: snapshot.error_code || 'assistant_unknown_error',
-            message: assistantT('assistantPage.requestFailed'),
-          }),
-          created_at: new Date().toISOString(),
-        }])
-      }
-      clearTask()
-      setSending(false)
-      sendingRef.current = false
-    }
-
-    chatApi.getAssistantTask(storedTaskId)
-      .then((snapshot) => restoreSnapshot(snapshot))
-      .catch(() => {
-        // Keep the marker for a running task; a temporary GET failure should
-        // not turn a recoverable background task into a new submission.
-        if (!cancelled && activeConvIdRef.current === conversationId) {
-          setSending(false)
-          sendingRef.current = false
-        }
-      })
-    return () => {
-      cancelled = true
-      controller.abort()
-    }
-  }, [activeConvId, appendTrace, assistantT, loadMessages, pushToken, resetStream])
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     followNewContent()
-  }, [messages, streamText, streamTool, pendingApprovals, followNewContent])
+  }, [messages, streamText, streamTool, pendingApprovals, traceEvents, plan, sending, followNewContent])
 
   const openConversation = useCallback(async (
     conv: ChatConversation,
     options: { updateUrl?: boolean } = {},
   ) => {
     resetFollowing()
-    setTaskId(null)
-    setPendingApprovals([])
     setActiveConversationId(conv.id)
     setView('chat')
     if (options.updateUrl !== false) onConversationChange?.(conv.id)
@@ -476,8 +387,9 @@ export default function ChatWidget({
     } else {
       setStockContext(null)
     }
-    await loadMessages(conv.id)
-  }, [loadMessages, loadSuggestedQuestions, onConversationChange, resetFollowing])
+    const detail = await loadMessages(conv.id)
+    if (activeConvIdRef.current === conv.id) void task.restore(conv.id, detail?.latest_task)
+  }, [loadMessages, loadSuggestedQuestions, onConversationChange, resetFollowing, task.restore])
 
   // A route is the source of truth for the embedded assistant. The first
   // render may not have the conversation list yet, so wait until that request
@@ -491,8 +403,6 @@ export default function ChatWidget({
       routeLoadRef.current = null
       if (activeConvId !== null || view === 'chat') {
         setActiveConversationId(null)
-        setTaskId(null)
-        setPendingApprovals([])
         setMessages([])
         setView('list')
         setStockContext(null)
@@ -531,8 +441,6 @@ export default function ChatWidget({
   const createNewConversation = useCallback(async () => {
     try {
       resetFollowing()
-      setTaskId(null)
-      setPendingApprovals([])
       const conv = await chatApi.createConversation()
       setActiveConversationId(conv.id)
       onConversationChange?.(conv.id)
@@ -554,8 +462,6 @@ export default function ChatWidget({
 
   const beginNewResearch = useCallback(() => {
     resetFollowing()
-    setTaskId(null)
-    setPendingApprovals([])
     setActiveConversationId(null)
     onConversationChange?.(null)
     setMessages([])
@@ -572,8 +478,6 @@ export default function ChatWidget({
       if (activeConvId === convId) {
         setActiveConversationId(null)
         onConversationChange?.(null, { replace: true })
-        setTaskId(null)
-        setPendingApprovals([])
         setMessages([])
         setView('list')
         setStockContext(null)
@@ -584,20 +488,15 @@ export default function ChatWidget({
     }
   }, [activeConvId, onConversationChange])
 
-  const deleteConversation = useCallback(async (convId: number, e: React.MouseEvent) => {
-    e.stopPropagation()
-    await removeConversation(convId)
-  }, [removeConversation])
-
   const handleSend = useCallback(async (
     overrideContent?: string,
     overrideStockContext?: StockContext,
   ) => {
     const content = (overrideContent || input).trim()
-    if (!content || sending || sendingRef.current || pendingApprovals.length > 0) return
+    if (!content || interactionLockedRef.current || sendingRef.current) return
 
     sendingRef.current = true
-    setSending(true)
+    setCreatingConversation(true)
 
     const messageStockContext = overrideStockContext || stockContext
     let convId = activeConvId
@@ -614,12 +513,13 @@ export default function ChatWidget({
         )
         convId = conv.id
         setActiveConversationId(conv.id)
+        sendingRef.current = true
         onConversationChange?.(conv.id)
-        setConversations((prev) => [conv, ...prev])
+        setConversations((prev) => [conv, ...prev.filter((item) => item.id !== conv.id)])
         setView('chat')
       } catch (error) {
         sendingRef.current = false
-        setSending(false)
+        setCreatingConversation(false)
         setView('chat')
         setMessages((previous) => [...previous, {
           id: Date.now() + 1,
@@ -632,143 +532,26 @@ export default function ChatWidget({
     }
 
     setInput('')
-    setSuggestedQuestions([]) // hide after first send
-    setTaskId(null)
-    setPendingApprovals([])
+    setSuggestedQuestions([])
+    setReviewRequest(0)
     traceEventsRef.current = []
     setTraceEvents([])
-    sessionStorage.removeItem(taskStorageKey(convId))
-
-    const tempUserMsg: ChatMessage = {
-      id: Date.now(),
-      role: 'user',
-      content,
-      created_at: new Date().toISOString(),
-    }
-    setMessages((prev) => [...prev, tempUserMsg])
-
-    resetStream()
+    setMessages((previous) => [...previous, {
+      id: Date.now(), role: 'user', content, created_at: new Date().toISOString(),
+    }])
     resetFollowing()
-    let receivedAny = false
-    let streamError: AssistantStreamError | null = null
-
+    setCreatingConversation(false)
+    setConversations(previous => previous.map(item => item.id === convId && !item.title
+      ? { ...item, title: content.slice(0, 20) } : item))
     try {
-      // 优先走 SSE 流式（token 流 + 工具过程可视）
-      await chatApi.sendAssistantMessageStream(convId, content, {
-        onRunStarted: ({ taskId: nextTaskId, contextUsage }) => {
-          receivedAny = true
-          if (nextTaskId > 0) {
-            setTaskId(nextTaskId)
-            sessionStorage.setItem(taskStorageKey(convId), String(nextTaskId))
-          }
-          if (contextUsage) {
-            setContextDetail((previous) => previous ? {
-              ...previous,
-              usage: contextUsage,
-              status: contextUsage.state,
-            } : previous)
-          }
-        },
-        onTaskCreated: (nextTaskId) => {
-          if (nextTaskId > 0) {
-            setTaskId(nextTaskId)
-            sessionStorage.setItem(taskStorageKey(convId), String(nextTaskId))
-          }
-        },
-        onContextPrepared: ({ compressedMessageCount, compressionStatus, mode, usageAfter, usageBefore }) => {
-          setContextDetail((previous) => previous ? {
-            ...previous,
-            usage: usageAfter,
-            status: usageAfter.state,
-            last_compression: {
-              status: compressionStatus,
-              mode,
-              usage_before: usageBefore,
-              usage_after: usageAfter,
-              saved_tokens: Math.max(0, usageBefore.total_tokens - usageAfter.total_tokens),
-              saved_percent: Math.round(Math.max(0, usageBefore.total_tokens - usageAfter.total_tokens) / Math.max(usageBefore.total_tokens, 1) * 100),
-              compressed_message_count: compressedMessageCount,
-            },
-          } : previous)
-        },
-        onTrace: appendTrace,
-        onToken: (t) => {
-          receivedAny = true
-          setStreamTool(null)
-          pushToken(t)
-        },
-        onToolCallStart: ({ name }) => {
-          receivedAny = true
-          // 工具调用轮的过渡性文本不是最终回答，清空缓冲
-          tokenBufRef.current = ''
-          setStreamText('')
-          setStreamTool(assistantT(`assistantPage.tools.${TOOL_LABELS[name] || name}`, { defaultValue: `Calling ${name}…` }))
-        },
-        onToolResult: () => {
-          // 结果已就绪，等待模型基于数据继续回答
-        },
-        onPlan: (p) => {
-          receivedAny = true
-          setStreamTool(null)
-          setPlan(p)
-        },
-        onApprovalRequired: (approval) => {
-          receivedAny = true
-          setPendingApprovals((previous) => (
-            previous.some((item) => item.id === approval.id) ? previous : [...previous, approval]
-          ))
-        },
-        onPaused: ({ taskId: pausedTaskId }) => {
-          if (pausedTaskId > 0) {
-            setTaskId(pausedTaskId)
-            sessionStorage.setItem(taskStorageKey(convId), String(pausedTaskId))
-          }
-          setSending(false)
-        },
-        onDone: (m) => {
-          receivedAny = true
-          const completedTrace = traceEventsRef.current
-          setMessages((prev) => [...prev, {
-            id: m.message_id || Date.now() + 1,
-            role: 'assistant',
-            content: m.content,
-            created_at: m.created_at || new Date().toISOString(),
-            trace: completedTrace.length > 0 ? completedTrace : undefined,
-            result: m.result,
-          }])
-          traceEventsRef.current = []
-          setTraceEvents([])
-          setTaskId(null)
-          setPendingApprovals([])
-          sessionStorage.removeItem(taskStorageKey(convId))
-          requestAnimationFrame(() => inputRef.current?.focus())
-        },
-        onError: (error) => {
-          receivedAny = true
-          streamError = error
-        },
-      })
-      setConversations((prev) =>
-        prev.map((c) => c.id === convId ? { ...c, title: c.title || content.slice(0, 20) } : c)
-      )
-    } catch {
-      const message = streamError
-        ? assistantFailureText(assistantT, streamError)
-        : (receivedAny
-            ? assistantT('assistantPage.connectionInterrupted')
-            : assistantT('assistantPage.requestFailed'))
-      setMessages((prev) => [...prev, {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: message,
-        created_at: new Date().toISOString(),
-      }])
+      await task.send(convId, content)
     } finally {
-      resetStream()
-      sendingRef.current = false
-      setSending(false)
+      if (activeConvIdRef.current === convId) {
+        sendingRef.current = false
+        setCreatingConversation(false)
+      }
     }
-  }, [input, sending, pendingApprovals.length, activeConvId, stockContext, pushToken, resetStream, loadMessages, resetFollowing, onConversationChange, appendTrace, assistantT])
+  }, [input, activeConvId, stockContext, task.send, resetFollowing, onConversationChange, assistantT, setActiveConversationId])
 
   const handleStockSelect = useCallback((stock: AssistantStockSearchResult) => {
     const nextContext: StockContext = {
@@ -783,139 +566,10 @@ export default function ChatWidget({
     )
   }, [handleSend])
 
-  const handleApprovalDecision = useCallback(async (
-    approval: AssistantApproval,
-    decision: 'approved' | 'rejected',
-  ) => {
-    const convId = activeConvId
-    if (!convId || !taskId || decidingApprovalId) return
-
-    setDecidingApprovalId(approval.id)
-    setSending(true)
-    resetStream()
-    resetFollowing()
-    let streamError: AssistantStreamError | null = null
-    let resolvedApprovalId = ''
-
-    try {
-      await chatApi.decideAssistantApprovalStream(approval.id, decision, {
-        onRunStarted: ({ taskId: resumedTaskId }) => {
-          if (resumedTaskId > 0) {
-            setTaskId(resumedTaskId)
-            sessionStorage.setItem(taskStorageKey(convId), String(resumedTaskId))
-          }
-        },
-        onToken: (token) => {
-          setStreamTool(null)
-          pushToken(token)
-        },
-        onToolCallStart: ({ name }) => {
-          tokenBufRef.current = ''
-          setStreamText('')
-          setStreamTool(assistantT(`assistantPage.tools.${TOOL_LABELS[name] || name}`, { defaultValue: `Calling ${name}…` }))
-        },
-        onToolResult: () => {
-          // 工具结果到达后，等待模型继续输出最终回答。
-        },
-        onTrace: appendTrace,
-        onApprovalRequired: (nextApproval) => {
-          setPendingApprovals((previous) => (
-            previous.some((item) => item.id === nextApproval.id)
-              ? previous
-              : [...previous, nextApproval]
-          ))
-        },
-        onPaused: ({ taskId: pausedTaskId, resolvedApprovalId: resolvedId, resolvedStatus }) => {
-          if (pausedTaskId > 0) {
-            setTaskId(pausedTaskId)
-            sessionStorage.setItem(taskStorageKey(convId), String(pausedTaskId))
-          }
-          if (resolvedId && resolvedStatus) {
-            resolvedApprovalId = resolvedId
-            setPendingApprovals((previous) => previous.map((item) => (
-              item.id === resolvedId ? { ...item, status: resolvedStatus } : item
-            )))
-          }
-        },
-        onDone: (message) => {
-          const completedTrace = traceEventsRef.current
-          setMessages((previous) => [...previous, {
-            id: message.message_id || Date.now() + 1,
-            role: 'assistant',
-            content: message.content,
-            created_at: message.created_at || new Date().toISOString(),
-            trace: completedTrace.length > 0 ? completedTrace : undefined,
-            result: message.result,
-          }])
-          traceEventsRef.current = []
-          setTraceEvents([])
-          setTaskId(null)
-          setPendingApprovals([])
-          sessionStorage.removeItem(taskStorageKey(convId))
-          requestAnimationFrame(() => inputRef.current?.focus())
-        },
-        onError: (error) => {
-          streamError = error
-        },
-      }, taskId)
-
-      if (streamError) throw new Error(assistantFailureText(assistantT, streamError))
-      // New hosts return the resolved card status in `paused`; old hosts did
-      // not, so keep a compatibility fallback for their one-card behavior.
-      if (!resolvedApprovalId) {
-        setPendingApprovals((previous) => previous.filter((item) => item.id !== approval.id))
-      }
-    } catch (error) {
-      // A decision is exactly-once on the server. If a browser loses the SSE
-      // response after submitting it, rehydrate instead of inviting a blind
-      // duplicate click that can only yield a conflict.
-      let reconciled = false
-      let terminalFailure = false
-      try {
-        const snapshot = await chatApi.getAssistantTask(taskId)
-        if (snapshot.conversation_id === convId) {
-          if (snapshot.status === 'awaiting_approval') {
-            setPendingApprovals(snapshot.pending_approvals.map(approvalFromSnapshot))
-            reconciled = true
-          } else if (snapshot.status === 'completed') {
-            await loadMessages(convId)
-            setTaskId(null)
-            setPendingApprovals([])
-            sessionStorage.removeItem(taskStorageKey(convId))
-            reconciled = true
-          } else if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
-            // The server cancels every unresolved card when a task fails. Do
-            // the same in the current view so a stale card cannot be clicked
-            // again after the checkpoint has been discarded.
-            setTaskId(null)
-            setPendingApprovals([])
-            sessionStorage.removeItem(taskStorageKey(convId))
-            terminalFailure = true
-            reconciled = true
-          }
-        }
-      } catch {
-        // The original failure remains actionable when recovery is unavailable.
-      }
-      if (!reconciled || terminalFailure) {
-        setMessages((previous) => [...previous, {
-          id: Date.now() + 1,
-          role: 'assistant',
-          content: error instanceof Error ? error.message : assistantT('assistantPage.unknownError'),
-          created_at: new Date().toISOString(),
-        }])
-      }
-      // The approval card owns its temporary disabled state. Re-throw so a
-      // transport conflict or outage leaves the user a clear retry path.
-      throw error
-    } finally {
-      resetStream()
-      setSending(false)
-      setDecidingApprovalId(null)
-    }
-  }, [activeConvId, taskId, decidingApprovalId, pushToken, resetStream, resetFollowing, loadMessages, appendTrace, assistantT])
-
-  const interactionLocked = sending || pendingApprovals.length > 0
+  const interactionLocked = sending || task.control !== null
+    || pendingApprovals.some((approval) => approval.status === 'pending')
+    || (task.snapshot != null && isActiveTask(task.snapshot.status))
+  interactionLockedRef.current = interactionLocked
 
   if (!open && !embedded) {
     return (
@@ -940,6 +594,8 @@ export default function ChatWidget({
           <div className="hidden w-64 shrink-0 md:flex">
             <AssistantSidebar
               conversations={conversations}
+              taskStatuses={taskStatuses}
+              onRename={renameConversation}
               activeConversationId={activeConvId}
               onOpen={openConversation}
               onCreate={beginNewResearch}
@@ -952,6 +608,8 @@ export default function ChatWidget({
             <div className="w-[min(19rem,88vw)] shadow-2xl">
               <AssistantSidebar
                 conversations={conversations}
+                taskStatuses={taskStatuses}
+                onRename={renameConversation}
                 activeConversationId={activeConvId}
                 onOpen={(conversation) => { setHistoryOpen(false); void openConversation(conversation) }}
                 onCreate={beginNewResearch}
@@ -1068,27 +726,21 @@ export default function ChatWidget({
             </div>
           ) : (
             conversations.map((conv) => (
-              <button
+              <div
                 key={conv.id}
-                onClick={() => openConversation(conv)}
-                className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-accent/30 transition-colors border-b border-border/20"
+                className="group flex w-full items-center justify-between border-b border-border/20 px-4 py-3 text-left hover:bg-accent/30"
               >
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] text-foreground truncate">
-                    {conv.title || assistantT('assistantPage.newConversation')}
+                <button type="button" onClick={() => void openConversation(conv)} className="min-w-0 flex-1 text-left">
+                  <div className="flex items-center gap-2 text-[13px] text-foreground">
+                    <span className="min-w-0 flex-1 truncate">{conv.title || assistantT('assistantPage.newConversation')}</span><AssistantTaskIndicator status={taskStatuses[conv.id]} />
                   </div>
                   <div className="text-[11px] text-muted-foreground mt-0.5">
                     {conv.stock_symbol ? `${conv.stock_market}:${conv.stock_symbol} · ` : ''}
                     {new Date(conv.created_at).toLocaleDateString()}
                   </div>
-                </div>
-                <button
-                  onClick={(e) => deleteConversation(conv.id, e)}
-                  className="p-1 rounded text-muted-foreground/50 hover:text-rose-400 transition-colors shrink-0"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
                 </button>
-              </button>
+                <AssistantConversationActions conversation={conv} onRename={renameConversation} onDelete={id => { void removeConversation(id) }} />
+              </div>
             ))
           )}
         </div>
@@ -1101,7 +753,9 @@ export default function ChatWidget({
             ref={scrollBoxRef}
             data-testid="assistant-message-list"
             onScroll={handleScroll}
-            className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 scrollbar sm:px-4"
+            tabIndex={0}
+            style={{ overflowAnchor: 'none' }}
+            className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-3 scrollbar sm:px-4"
           >
             {/* Suggested questions */}
             {messages.length === 0 && suggestedQuestions.length > 0 && (
@@ -1141,9 +795,7 @@ export default function ChatWidget({
                     }`}
                   >
                     {msg.role === 'assistant' ? (
-                      <div className="prose prose-sm dark:prose-invert max-w-none overflow-x-auto [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5 [&_h1]:text-[15px] [&_h2]:text-[14px] [&_h3]:text-[13px] [&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_table]:text-[12px] [&_th]:border [&_th]:border-border/60 [&_th]:bg-background/30 [&_th]:px-2 [&_th]:py-1.5 [&_th]:font-semibold [&_td]:border [&_td]:border-border/60 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                      </div>
+                      <AssistantMarkdown content={msg.content} />
                     ) : (
                       msg.content
                     )}
@@ -1170,14 +822,15 @@ export default function ChatWidget({
               <div key={approval.id} className="flex justify-start">
                 <ApprovalCard
                   approval={approval}
-                  onDecision={(decision) => handleApprovalDecision(approval, decision)}
+                  blocked={task.control !== null || task.decidingApprovalId !== null}
+                  onDecision={(decision) => task.decide(approval, decision)}
                 />
               </div>
             ))}
-            {sending && traceEvents.length > 0 && (
+            {traceEvents.length > 0 && (
               <div className="flex justify-start">
                 <div className="w-full max-w-[92%] sm:max-w-[85%]">
-                  <TraceTimeline events={traceEvents} live />
+                  <TraceTimeline events={traceEvents} live={sending} reviewRequest={reviewRequest} />
                 </div>
               </div>
             )}
@@ -1223,9 +876,7 @@ export default function ChatWidget({
               // 流式增量渲染（未闭合代码块乐观闭合）
               <div className="flex justify-start">
                 <div className="max-w-[92%] rounded-xl bg-accent/60 px-3 py-2 text-[13px] leading-relaxed text-foreground sm:max-w-[85%]">
-                  <div className="prose prose-sm dark:prose-invert max-w-none overflow-x-auto [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5 [&_h1]:text-[15px] [&_h2]:text-[14px] [&_h3]:text-[13px] [&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_table]:text-[12px] [&_th]:border [&_th]:border-border/60 [&_th]:bg-background/30 [&_th]:px-2 [&_th]:py-1.5 [&_th]:font-semibold [&_td]:border [&_td]:border-border/60 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{safeStreamMarkdown(streamText)}</ReactMarkdown>
-                  </div>
+                  <AssistantMarkdown content={streamText} streaming />
                 </div>
               </div>
             )}
@@ -1256,8 +907,28 @@ export default function ChatWidget({
             </button>
           )}
 
+          <AssistantTaskBar
+            snapshot={task.snapshot}
+            error={task.error}
+            disconnected={task.disconnected}
+            control={task.control}
+            controlError={task.controlError}
+            onStop={() => { void task.cancel() }}
+            onBackground={onNavigate ? () => onNavigate('/') : undefined}
+            onRetry={() => { traceEventsRef.current = []; setTraceEvents([]); void task.retry() }}
+            onReconnect={() => { void task.reconnect() }}
+            onConfigure={() => onNavigate?.('/settings')}
+            onPermissions={() => setPermissionsOpen(true)}
+            onContext={() => setContextPanelOpen(true)}
+            onRevise={() => {
+              const original = [...messages].reverse().find((message) => message.role === 'user')
+              if (original) setInput(original.content)
+              requestAnimationFrame(() => inputRef.current?.focus())
+            }}
+            onReview={() => { setReviewRequest((previous) => previous + 1); requestAnimationFrame(() => scrollToBottom()) }}
+          />
           {/* Input */}
-          <div data-testid="assistant-composer" className="sticky bottom-0 flex shrink-0 items-center gap-2 border-t border-border/40 bg-background/95 px-3 py-2.5 pb-[calc(0.625rem+env(safe-area-inset-bottom))] backdrop-blur sm:px-4 sm:py-3 sm:pb-3">
+          <div data-testid="assistant-composer" className={`sticky bottom-0 flex shrink-0 items-center gap-2 border-t border-border/40 bg-background px-3 py-2.5 sm:px-4 sm:py-3 ${embedded ? '' : 'pb-[calc(0.625rem+env(safe-area-inset-bottom))] sm:pb-3'}`}>
             <input
               ref={inputRef}
               type="text"

@@ -56,8 +56,10 @@ from .repository import AssistantRepository
 from .result_builder import build_deterministic_assistant_result
 from .schemas import (
     ConversationDetailDTO,
+    AssistantActivityDTO,
     ConversationDTO,
     CreateConversationCommand,
+    RenameConversationCommand,
     MessageDTO,
 )
 from .result_schemas import AssistantResult
@@ -129,6 +131,29 @@ class AssistantService:
             for row in self._repository.list_conversations(limit)
         ]
 
+    def rename_conversation(self, conversation_id: int, command: RenameConversationCommand) -> ConversationDTO:
+        return self._conversation_dto(self._repository.rename_conversation(
+            self._require_conversation(conversation_id), command.title))
+
+    async def generate_conversation_title(self, conversation_id: int) -> bool:
+        from .titles import summarize_title
+        conversation = self._require_conversation(conversation_id)
+        if conversation.title_source not in ('provisional', 'legacy'):
+            return False
+        rows = self._repository.list_messages(conversation_id)
+        question = next((row.content for row in rows if row.role == 'user'), '')
+        answer = next((row.content for row in rows if row.role == 'assistant'), '')
+        if not question or not answer:
+            return False
+        expected_title = conversation.title or ''
+        client = self.build_context_compression_client()
+        # Release the read transaction before waiting for the model.
+        self._repository.session.commit()
+        title = await summarize_title(client, question, answer)
+        if not title:
+            return False
+        return self._repository.set_automatic_title(conversation_id, title, expected_title)
+
     def get_suggested_questions(self, symbol: str, market: str = "CN") -> list[str]:
         """Build deterministic prompts from the current local stock context."""
         questions: list[str] = []
@@ -192,6 +217,7 @@ class AssistantService:
                 ).model_dump(mode="json")
         return ConversationDetailDTO(
             conversation=self._conversation_dto(conversation),
+            latest_task=self._repository.latest_task_snapshot(conversation_id),
             messages=[
                 self._message_dto(
                     row,
@@ -393,6 +419,12 @@ class AssistantService:
             return self._repository.get_task_snapshot(task_run_id)
         except LookupError as exc:
             raise AssistantNotFoundError(str(exc)) from exc
+
+    def get_activity(self) -> AssistantActivityDTO:
+        return AssistantActivityDTO.model_validate(self._repository.get_activity())
+
+    def read_notifications(self, *, ids: list[int], through_id: int | None = None) -> int:
+        return self._repository.read_notifications(ids=ids, through_id=through_id)
 
     def pause_task(self, task_id: int, result) -> list:
         """Persist a waiting runtime before exposing any approval to a browser."""
@@ -936,6 +968,7 @@ class AssistantService:
         return ConversationDTO(
             id=conversation.id,
             title=conversation.title or "",
+            title_source=conversation.title_source,
             stock_symbol=conversation.stock_symbol,
             stock_market=conversation.stock_market,
             created_at=conversation.created_at,

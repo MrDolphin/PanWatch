@@ -5,6 +5,7 @@ import { readSSE, type SSEEvent } from './sse'
 export interface ChatConversation {
   id: number
   title: string
+  title_source?: 'provisional' | 'legacy' | 'automatic' | 'manual'
   stock_symbol?: string | null
   stock_market?: string | null
   created_at: string
@@ -72,6 +73,41 @@ export interface AssistantResult {
 export interface ConversationDetail {
   conversation: ChatConversation
   messages: ChatMessage[]
+  latest_task?: AssistantTaskSnapshot | null
+}
+
+export interface AssistantContextExport {
+  content: string
+  filename: string
+  message_count: number
+  last_message_id: number | null
+  exported_at: string
+  incomplete: boolean
+}
+
+export interface AssistantContextExportJobInfo {
+  id: number
+  conversation_id: number
+  title: string
+  language: 'zh-CN' | 'en-US'
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  message_count: number
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  processed_chars: number
+  total_chars: number
+  completed_parts: number
+  error_code: string | null
+}
+
+export interface AssistantContextExportJob extends AssistantContextExportJobInfo {
+  result: AssistantContextExport | null
+}
+
+export interface AssistantContextExportHistory {
+  items: AssistantContextExportJobInfo[]
+  next_cursor: number | null
 }
 
 export interface AssistantApproval {
@@ -83,10 +119,51 @@ export interface AssistantApproval {
   status: 'pending' | 'approved' | 'rejected'
 }
 
+export type AssistantTaskStatus = 'pending' | 'queued' | 'dispatched' | 'running' | 'awaiting_approval' | 'waiting_retry' | 'waiting_callback' | 'completed' | 'failed' | 'cancelled' | 'expired' | 'dead_letter'
+
+export interface AssistantActivityTask {
+  id: number
+  conversation_id: number
+  title: string
+  status: AssistantTaskStatus
+  current_step: number
+  started_at?: string | null
+  created_at?: string | null
+}
+
+export interface AssistantNotification {
+  id: number
+  task_id: number
+  conversation_id: number
+  title: string
+  kind: 'completed' | 'failed' | 'awaiting_approval'
+  created_at?: string | null
+  read_at?: string | null
+}
+
+export interface AssistantActivity {
+  active_tasks: AssistantActivityTask[]
+  notifications: AssistantNotification[]
+  unread_count: number
+  notification_cursor: number
+}
+
 export interface AssistantTaskSnapshot {
   id: number
   conversation_id: number
-  status: string
+  status: AssistantTaskStatus
+  current_step?: number
+  last_event_id?: string
+  attempt_event_id?: string
+  trace?: AssistantTraceEvent[]
+  retry_count?: number
+  cancel_requested?: boolean
+  can_retry?: boolean
+  retry_blocked_reason?: 'tools_already_started' | 'not_terminal' | 'worker_stopping' | null
+  created_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  user_message_id?: number | null
   error_code?: string | null
   model?: string | null
   duration_ms?: number
@@ -212,6 +289,23 @@ export interface AssistantConfig {
 export type AssistantConfigUpdate = Omit<AssistantConfig, 'models'>
 
 export const chatApi = {
+  listContextExports: (options: { conversationId?: number; beforeId?: number; ids?: number[]; limit?: number } = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: String(options.limit || 20) })
+    if (options.conversationId != null) query.set('conversation_id', String(options.conversationId))
+    if (options.beforeId != null) query.set('before_id', String(options.beforeId))
+    options.ids?.forEach(id => query.append('ids', String(id)))
+    return fetchAPI<AssistantContextExportHistory>(`/assistant/exports?${query}`, { signal })
+  },
+  exportConversationContext: (conversationId: number, language: 'zh-CN' | 'en-US', signal?: AbortSignal) =>
+    fetchAPI<AssistantContextExportJob>(`/assistant/conversations/${conversationId}/export`, {
+      method: 'POST', body: JSON.stringify({ language }), signal,
+    }),
+  getContextExport: (exportId: number, signal?: AbortSignal) =>
+    fetchAPI<AssistantContextExportJob>(`/assistant/exports/${exportId}`, { signal }),
+  retryContextExport: (exportId: number, signal?: AbortSignal) =>
+    fetchAPI<AssistantContextExportJob>(`/assistant/exports/${exportId}/retry`, { method: 'POST', signal }),
+  renameConversation: (conversationId: number, title: string) =>
+    fetchAPI<ChatConversation>(`/assistant/conversations/${conversationId}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   createConversation: (params?: { stock_symbol?: string; stock_market?: string; initial_context?: string }) =>
     fetchAPI<ChatConversation>('/assistant/conversations', {
       method: 'POST',
@@ -236,6 +330,19 @@ export const chatApi = {
 
   getAssistantTask: (taskId: number) =>
     fetchAPI<AssistantTaskSnapshot>('/assistant/tasks/' + taskId),
+
+  getActiveAssistantTasks: (signal?: AbortSignal) => fetchAPI<AssistantActivity['active_tasks']>('/assistant/active-tasks', { signal }),
+  getAssistantActivity: (signal?: AbortSignal) =>
+    fetchAPI<AssistantActivity>('/assistant/activity', { signal }),
+
+  readAssistantNotifications: (command: { ids?: number[]; through_id?: number }) =>
+    fetchAPI<{ updated: number }>('/assistant/notifications/read', { method: 'POST', body: JSON.stringify(command) }),
+
+  cancelAssistantTask: (taskId: number) =>
+    fetchAPI<AssistantTaskSnapshot>(`/assistant/tasks/${taskId}/cancel`, { method: 'POST' }),
+
+  retryAssistantTask: (taskId: number) =>
+    fetchAPI<AssistantTaskSnapshot>(`/assistant/tasks/${taskId}/retry`, { method: 'POST' }),
 
   getAssistantContext: (conversationId: number) =>
     fetchAPI<AssistantContextDetail>(`/assistant/conversations/${conversationId}/context`),
@@ -320,6 +427,7 @@ export interface ChatStreamCallbacks {
   onDone?: (msg: { message_id: number; content: string; created_at: string; result?: AssistantResult | null }) => void
   /** AI service failure with a safe stable code and localized fallback text. */
   onError?: (error: AssistantStreamError) => void
+  onCancelled?: () => void
   /** Factual runtime events for the user-facing trace panel. */
   onTrace?: (event: AssistantTraceEvent) => void
 }
@@ -337,6 +445,10 @@ export interface AssistantTraceEvent {
 }
 
 const TRACE_EVENTS = new Set([
+  'task_created',
+  'task_queued',
+  'retry_scheduled',
+  'cancelled',
   'run_started',
   'context_prepared',
   'step_updated',
@@ -460,6 +572,10 @@ function dispatchAssistantEvent(
         result: d.result || null,
       })
       break
+    case 'cancelled':
+      state.finished = true
+      callbacks.onCancelled?.()
+      break
     case 'error':
       state.terminalError = {
         code: d.code || 'assistant_unknown_error',
@@ -518,7 +634,7 @@ async function sendMessageStream(
   // 连接被中断但生成未结束，经持久化任务事件流接回。
   let reconnects = 0
   const reconnectPath = taskEventPath
-  while (!state.finished && !state.paused && reconnectPath && reconnects < CHAT_STREAM_MAX_RECONNECTS) {
+  while (!state.finished && !state.paused && !state.terminalError && reconnectPath && reconnects < CHAT_STREAM_MAX_RECONNECTS) {
     if (signal?.aborted) return
     reconnects += 1
     try {
@@ -552,7 +668,7 @@ async function subscribeAssistantTaskStream(
   let reconnects = 0
   const path = `/assistant/tasks/${taskId}/events`
 
-  while (!state.finished && !state.paused && reconnects < CHAT_STREAM_MAX_RECONNECTS) {
+  while (!state.finished && !state.paused && !state.terminalError && reconnects < CHAT_STREAM_MAX_RECONNECTS) {
     if (signal?.aborted) return
     try {
       await readSSE(path, {
@@ -609,7 +725,7 @@ async function decideAssistantApprovalStream(
   // accepted the decision, follow the durable task stream instead of posting
   // the decision again.
   let reconnects = 0
-  while (!state.finished && !state.paused && taskId && reconnects < CHAT_STREAM_MAX_RECONNECTS) {
+  while (!state.finished && !state.paused && !state.terminalError && taskId && reconnects < CHAT_STREAM_MAX_RECONNECTS) {
     if (signal?.aborted) return
     reconnects += 1
     try {

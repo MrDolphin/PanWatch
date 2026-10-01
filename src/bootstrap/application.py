@@ -21,8 +21,10 @@ from src.modules.administration.api import (
 )
 from src.modules.administration.api.auth import get_current_user
 from src.modules.administration.api.settings import get_app_version
+from src.modules.notifications import api as notifications_api
 from src.modules.assistant import api as assistant_api
 from src.modules.assistant.task_runner import assistant_task_runner
+from src.modules.assistant.export_jobs import context_export_runner
 from src.modules.automation.api import agents, suggestions, templates
 from src.modules.market.api import (
     discovery,
@@ -190,7 +192,11 @@ app.include_router(
 )
 
 
+app.include_router(notifications_api.router, prefix="/api/notifications", tags=["notifications"], dependencies=protected)
+
 app.router.on_startup.append(assistant_task_runner.recover_pending)
+app.router.on_startup.append(context_export_runner.recover_pending)
+app.router.on_shutdown.append(context_export_runner.shutdown)
 # PAT 管理(需登录):创建/列出/吊销 MCP 用的个人访问令牌
 app.include_router(
     pats.router, prefix="/api/pats", tags=["pats"], dependencies=protected
@@ -229,3 +235,9 @@ async def health():
 async def version():
     """获取应用版本号（公开接口）"""
     return {"version": get_app_version()}
+
+
+# Capture the native context at the assembly root. The server entrypoint can
+# be imported as __mp_main__ and server in one reload worker; capturing the
+# mutable router context there would nest two complete server startups.
+application_lifespan = app.router.lifespan_context

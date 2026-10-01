@@ -12,6 +12,15 @@ export interface ApiResponse<T> {
 }
 
 const API_ERROR_TEXT_EN: Record<string, string> = {
+  assistant_export_empty: 'There is no saved conversation content to summarize.',
+  assistant_export_budget: 'The context budget is too small. Increase it in assistant settings and retry.',
+  assistant_export_too_large: 'This conversation exceeds the current summary export limit.',
+  assistant_export_invalid: 'Could not generate a valid context summary. Try again.',
+  assistant_export_timeout: 'Context summary generation timed out. Try again.',
+  assistant_export_cancelled: 'Context export was cancelled.',
+  notification_cursor_invalid: 'The notification page cursor is invalid. Refresh the list.',
+  notification_pending_action: 'Resolve pending approvals before archiving.',
+  notification_source_unavailable: 'The notification source was deleted or is unavailable.',
   account_not_found: 'The account could not be found.',
   ai_authentication_failed: 'AI service authentication failed. Check that the API key is correct and still valid.',
   ai_connection_failed: 'Could not connect to the AI service. Check the service URL, proxy, and network.',
