@@ -18,13 +18,15 @@ WORKFLOW_AGENT_NAMES: tuple[str, ...] = (
     "daily_report",
 )
 
-CAPABILITY_AGENT_NAMES: tuple[str, ...] = ("chart_analyst",)
-LEGACY_CAPABILITY_AGENT_NAMES: tuple[str, ...] = ("news_digest",)
+# Retired identifiers reject old imports, filter obsolete suggestions, and
+# classify historical reports; they have no runtime implementation or seed.
+RETIRED_AGENT_NAMES: tuple[str, ...] = ("chart_analyst", "news_digest")
+LEGACY_CAPABILITY_AGENT_NAMES = RETIRED_AGENT_NAMES
 
 
 def infer_agent_kind(agent_name: str | None) -> str:
     name = (agent_name or "").strip()
-    if name in CAPABILITY_AGENT_NAMES or name in LEGACY_CAPABILITY_AGENT_NAMES:
+    if name in LEGACY_CAPABILITY_AGENT_NAMES:
         return AGENT_KIND_CAPABILITY
     return AGENT_KIND_WORKFLOW
 
@@ -57,7 +59,7 @@ AGENT_SEED_SPECS: tuple[AgentSeedSpec, ...] = (
     AgentSeedSpec(
         name="premarket_outlook",
         display_name="盘前分析",
-        description="开盘前综合昨日分析和隔夜信息，展望今日走势",
+        description="开盘前结合行情、技术状态和隔夜资讯，独立生成今日交易展望",
         enabled=False,
         schedule="0 9 * * 1-5",
         execution_mode="batch",
@@ -94,19 +96,6 @@ AGENT_SEED_SPECS: tuple[AgentSeedSpec, ...] = (
         kind=AGENT_KIND_WORKFLOW,
         visible=True,
         display_order=30,
-    ),
-    AgentSeedSpec(
-        name="chart_analyst",
-        display_name="技术分析（能力）",
-        description="内部能力：详情页按需触发图像技术分析，不独立调度",
-        enabled=False,
-        schedule="",
-        execution_mode="single",
-        kind=AGENT_KIND_CAPABILITY,
-        visible=False,
-        lifecycle_status="deprecated",
-        replaced_by="intraday_monitor,daily_report,premarket_outlook",
-        display_order=120,
     ),
     AgentSeedSpec(
         name="tradingagents",
