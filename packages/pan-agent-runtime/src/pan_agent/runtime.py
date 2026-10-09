@@ -411,7 +411,7 @@ class AgentRuntime:
                         continue
                     if decision.mode is PermissionMode.DENY:
                         result = ToolResult.failure(
-                            summary="工具权限不足", error_code="permission_denied"
+                            summary=decision.reason or "工具权限不足", error_code="permission_denied"
                         )
                         await self._publish_tool_completed(sink, request, call, result)
                         self._append_tool_result(messages, call, result)
@@ -585,6 +585,12 @@ class AgentRuntime:
                     self._policy,
                     names=selected_names,
                     include_deferred=True,
+                )
+                # Virtual tools belong to earlier extensions rather than the registry.
+                model_tools.extend(
+                    tool
+                    for name, (tool, _) in extension_tools.items()
+                    if name in selected_names and self._policy.is_tool_visible(request, tool)
                 )
             if decision is not None and decision.additional_tools:
                 for tool in decision.additional_tools:

@@ -28,6 +28,7 @@ from src.platform.tasking.contracts import TaskEventType, TaskStatus
 from src.platform.language import resolve_report_language
 
 from .prompt import build_assistant_messages
+from .watch_request import inspect_watch_request
 from .repository import AssistantRepository
 from .result_builder import build_assistant_result
 from .service import AssistantService
@@ -35,7 +36,7 @@ from .service import AssistantService
 logger = logging.getLogger(__name__)
 
 ASSISTANT_RUN_TIMEOUT_SECONDS = 180
-ASSISTANT_TOOL_TIMEOUT_SECONDS = 15
+ASSISTANT_TOOL_TIMEOUT_SECONDS = 120  # Diagnosis includes bounded nested reads and model analysis.
 ASSISTANT_MAX_STEPS = 12
 ASSISTANT_MAX_TOOL_CALLS = 24
 ANSWER_TOKEN_BATCH_CHARS = 128
@@ -318,11 +319,15 @@ class AssistantTaskRunner:
                     ]
                 )
             )
+            original = next((m.content for m in reversed(messages) if m.role == "user" and m.content.strip()), "")
+            watch_request = (task_run.context or {}).get("watch_request") or inspect_watch_request(original, context=dict(task_run.context or {}))
+            watch_request = service.refresh_legacy_watch_retry(task_run, watch_request)
             request = RunRequest(
                 run_id=str(task_id),
                 messages=messages,
                 context={
                     **dict(task_run.context or {}),
+                    "watch_request": watch_request,
                     **(
                         {
                             "context_usage": context_result.usage_after.model_dump(mode="json"),
@@ -386,9 +391,14 @@ class AssistantTaskRunner:
                 return
             client = service.build_failover_client()
             runtime = service.build_runtime(client)
+            task_run = service._repository.get_task_run(task_id)
+            resume_context = {k: v for k, v in dict(task_run.context or {}).items() if k not in {"tool_choice", "allowed_tool_names"}}
+            if resume_context.get("watch_request"):
+                resume_context["watch_request"] = service.refresh_legacy_watch_retry(task_run, resume_context["watch_request"])
             request = RunRequest(
                 run_id=str(task_id),
                 messages=checkpoint.messages,
+                context=resume_context,
                 limits=RunLimits(
                     max_steps=ASSISTANT_MAX_STEPS,
                     max_tool_calls=ASSISTANT_MAX_TOOL_CALLS,
@@ -455,7 +465,8 @@ class AssistantTaskRunner:
                             "name": approval.tool_name,
                             "risk": approval.risk,
                             "arguments": approval.arguments or {},
-                            "expires_at": approval.expires_at.isoformat()
+                            "presentation": approval.presentation or {},
+                            "expires_at": AssistantRepository._utc_timestamp(approval.expires_at).isoformat()
                             if approval.expires_at
                             else "",
                         },

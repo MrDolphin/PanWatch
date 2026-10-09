@@ -26,10 +26,11 @@ function safeInternalPath(value: string): string | null {
 
 function formatObservedAt(value: string | null | undefined, locale: string): string {
   if (!value) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
   return new Intl.DateTimeFormat(locale, {
-    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
   }).format(date)
 }
 
@@ -65,6 +66,7 @@ export function AssistantResultCard({
     || result.inferences.length > 0
     || result.risks.length > 0
     || result.missing_data.length > 0
+    || result.evidence.length > 0
 
   const handleAction = (action: AssistantNextAction) => {
     if (disabled) return
@@ -102,7 +104,7 @@ export function AssistantResultCard({
     setTargetPrice('')
   }
 
-  if (!hasDetails && result.next_actions.length === 0) return null
+  if (!hasDetails && !(result.judgments?.length) && result.next_actions.length === 0) return null
 
   return (
     <section className="mt-2 rounded-xl border border-border/60 bg-background/70 px-3 py-2.5 text-[12px]">
@@ -129,6 +131,25 @@ export function AssistantResultCard({
               )
             })}
           </ul>
+        </div>
+      )}
+
+      {!!result.judgments?.length && (
+        <div className="mt-2 space-y-2">
+          <div className="font-medium">{tr('diagnosisJudgments')}</div>
+          {result.judgments.map((item) => (
+            <div key={item.step_id} className="rounded-lg border border-border/40 p-2 break-words">
+              <div className="font-medium">{item.title}{item.status === 'failed' ? ` · ${tr('diagnosisFailed')}` : ''}</div>
+              <div className="mt-1 whitespace-pre-wrap text-muted-foreground">{item.text}</div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {item.evidence_ids.map((id) => {
+                  const source = evidenceById.get(id)
+                  return source ? <span key={id} className="rounded bg-primary/5 px-1 text-[10px] text-muted-foreground">{source.source_name} · {source.data_at || tr('freshness.unknown')}</span> : null
+                })}
+                {!item.evidence_ids.length && <span className="text-[10px] text-amber-700 dark:text-amber-300">{tr('diagnosisNoEvidence')}</span>}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -164,6 +185,10 @@ export function AssistantResultCard({
             <ul className="mt-2 space-y-1.5">
               {result.evidence.map((item) => {
                 const sourceUrl = safeExternalUrl(item.source_url)
+                const kind = item.evidence_kind || 'source_data'
+                const isSnapshot = kind === 'local_snapshot'
+                const isDiscovery = kind === 'tool_discovery'
+                const snapshotTime = formatObservedAt(item.data_at || item.observed_at, i18n.language)
                 return (
                   <li key={item.id} className="rounded-lg border border-border/40 px-2 py-1.5">
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -172,11 +197,14 @@ export function AssistantResultCard({
                           {item.source_name}<ExternalLink className="h-3 w-3" />
                         </a>
                       ) : <span className="font-medium">{item.source_name}</span>}
-                      <span className={`rounded px-1.5 py-0.5 text-[9px] ${item.freshness === 'fresh' ? 'bg-emerald-500/10 text-emerald-600' : item.freshness === 'stale' ? 'bg-rose-500/10 text-rose-600' : 'bg-amber-500/10 text-amber-600'}`}>
-                        {tr(`freshness.${item.freshness}`)}
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] ${isSnapshot || isDiscovery ? 'bg-primary/5 text-muted-foreground' : item.freshness === 'fresh' ? 'bg-emerald-500/10 text-emerald-600' : item.freshness === 'stale' ? 'bg-rose-500/10 text-rose-600' : 'bg-amber-500/10 text-amber-600'}`}>
+                        {tr(isDiscovery ? 'toolDiscovery' : isSnapshot ? 'localSnapshot' : `freshness.${item.freshness}`)}
                       </span>
-                      {item.observed_at && <span className="text-[10px] text-muted-foreground">{tr('observedAt', { time: formatObservedAt(item.observed_at, i18n.language) })}</span>}
-                      {item.data_at && <span className="text-[10px] text-muted-foreground">{tr('dataAt', { time: formatObservedAt(item.data_at, i18n.language) || item.data_at })}</span>}
+                      {isSnapshot && snapshotTime && <span className="text-[10px] text-muted-foreground">{tr('snapshotAt', { time: snapshotTime })}</span>}
+                      {!isSnapshot && item.observed_at && <span className="text-[10px] text-muted-foreground">{tr(isDiscovery ? 'executedAt' : 'observedAt', { time: formatObservedAt(item.observed_at, i18n.language) })}</span>}
+                      {item.market_status && <span className="text-[10px] text-muted-foreground">{tr('marketStatus', { status: item.market_status })}</span>}
+                      {item.quote_date && <span className="text-[10px] text-muted-foreground">{tr('quoteDate', { date: item.quote_date })}</span>}
+                      {kind === 'source_data' && item.data_at && <span className="text-[10px] text-muted-foreground">{tr('dataAt', { time: formatObservedAt(item.data_at, i18n.language) || item.data_at })}</span>}
                       {(item.period_start || item.period_end) && (
                         <span className="text-[10px] text-muted-foreground">
                           {tr('coverage', { start: item.period_start || '—', end: item.period_end || '—' })}

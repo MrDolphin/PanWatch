@@ -27,12 +27,15 @@ export interface AssistantEvidence {
   source_name: string
   source_url?: string | null
   summary: string
+  evidence_kind?: 'source_data' | 'tool_discovery' | 'local_snapshot'
   observed_at?: string | null
   data_at?: string | null
   period_start?: string | null
   period_end?: string | null
   freshness: 'fresh' | 'delayed' | 'stale' | 'unknown'
-  freshness_basis: 'published_at' | 'as_of' | 'observed_at' | 'unknown'
+  freshness_basis: 'published_at' | 'as_of' | 'observed_at' | 'source_timestamp' | 'quote_date' | 'unknown'
+  market_status?: string | null
+  quote_date?: string | null
   symbol?: string | null
   market?: string | null
 }
@@ -64,6 +67,7 @@ export interface AssistantResult {
   summary: string
   facts: AssistantFact[]
   inferences: string[]
+  judgments?: Array<{ step_id: string; title: string; text: string; status: string; evidence_ids: string[] }>
   risks: string[]
   missing_data: string[]
   evidence: AssistantEvidence[]
@@ -702,9 +706,12 @@ async function decideAssistantApprovalStream(
   callbacks: ChatStreamCallbacks,
   taskId?: number,
   signal?: AbortSignal,
+  afterEventId = 0,
 ): Promise<void> {
   const state: AssistantStreamState = {
-    lastEventId: 0,
+    // A decision response can close before the resume worker has started.
+    // Reconnect past the old approval pause instead of replaying it as new.
+    lastEventId: Math.max(0, afterEventId),
     finished: false,
     paused: false,
     terminalError: null,

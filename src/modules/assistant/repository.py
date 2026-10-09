@@ -43,6 +43,7 @@ from src.platform.persistence.models import (
 from src.platform.tasking.contracts import TaskEvent, TaskEventType, TaskStatus
 
 from .trace import historical_trace_event
+from .result_schemas import restored_result_payload
 
 
 class AssistantRepository:
@@ -80,12 +81,21 @@ class AssistantRepository:
         return (
             self._session.query(ChatMessage)
             .filter(ChatMessage.conversation_id == conversation_id)
-            .order_by(ChatMessage.created_at.asc())
+            .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
             .all()
         )
 
     def get_message(self, message_id: int) -> ChatMessage | None:
         return self._session.query(ChatMessage).filter(ChatMessage.id == message_id).first()
+
+    def watch_request_for_message(self, conversation_id: int, message_id: int) -> dict | None:
+        task = (
+            self._session.query(AssistantTaskRun)
+            .filter(AssistantTaskRun.conversation_id == conversation_id, AssistantTaskRun.user_message_id == message_id)
+            .order_by(AssistantTaskRun.id.desc())
+            .first()
+        )
+        return (task.context or {}).get("watch_request") if task else None
 
     def latest_task_snapshot(self, conversation_id: int) -> dict | None:
         task = (
@@ -1144,7 +1154,7 @@ class AssistantRepository:
             "started_at": self._utc_timestamp(task.started_at),
             "finished_at": self._utc_timestamp(task.finished_at),
             "user_message_id": task.user_message_id,
-            "result": task.result_data,
+            "result": restored_result_payload(task.result_data),
             "model": task.model,
             "duration_ms": self._task_duration_ms(task),
             "usage": {
@@ -1164,7 +1174,7 @@ class AssistantRepository:
                     "risk": approval.risk,
                     "arguments": approval.arguments or {},
                     "presentation": approval.presentation or {},
-                    "expires_at": approval.expires_at,
+                    "expires_at": self._utc_timestamp(approval.expires_at),
                 }
                 for approval in (
                     approval

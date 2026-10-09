@@ -8,6 +8,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from pydantic import BaseModel, Field
@@ -15,10 +16,13 @@ from pydantic import BaseModel, Field
 from .result_schemas import (
     AssistantEvidence,
     AssistantFact,
+    AssistantJudgment,
     AssistantNextAction,
     AssistantResult,
+    SOURCE_TIME_WARNINGS,
 )
 from .tool_descriptors import PANWATCH_TOOL_DESCRIPTORS
+from .watch_request import UNSUPPORTED_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +158,21 @@ def _evidence_and_facts(
     deterministic_risks: list[str] = []
     quote_points: dict[str, list[tuple[float, datetime | None]]] = {}
     kline_points: dict[str, list[tuple[float, str | None]]] = {}
+    expanded = []
     for invocation in invocations:
+        payload = getattr(invocation, "result_data", None) or {}
+        nested = payload.get("nested_tools") if isinstance(payload, dict) else None
+        if isinstance(nested, list) and nested:
+            for row in nested[:16]:
+                expanded.append(SimpleNamespace(
+                    call_id=row["call_id"], tool_name=row["tool_name"],
+                    arguments=row.get("arguments", {}), status="completed" if row.get("ok") else "failed",
+                    summary=row.get("summary", ""), source_data=row.get("sources", []),
+                    result_data=row.get("data", {}), observed_at=_parse_datetime(row.get("observed_at")),
+                ))
+        else:
+            expanded.append(invocation)
+    for invocation in expanded:
         summary = str(invocation.summary or "").strip()[:2_000]
         if invocation.status != "completed":
             if summary:
@@ -165,6 +183,8 @@ def _evidence_and_facts(
             sources = [{"name": invocation.tool_name}]
         evidence_ids: list[str] = []
         arguments = invocation.arguments if isinstance(invocation.arguments, dict) else {}
+        raw_result_data = getattr(invocation, "result_data", None)
+        data = raw_result_data if isinstance(raw_result_data, dict) else {}
         for index, source in enumerate(sources):
             source = source if isinstance(source, dict) else {"name": str(source)}
             evidence_id = f"ev_{invocation.call_id}_{index + 1}"
@@ -182,8 +202,8 @@ def _evidence_and_facts(
                 reference_time = _parse_datetime(as_of)
             else:
                 data_at = None
-                freshness_basis = "observed_at" if observed_at else "unknown"
-                reference_time = observed_at
+                freshness_basis = "unknown"
+                reference_time = None
             evidence.append(
                 AssistantEvidence(
                     id=evidence_id,
@@ -195,12 +215,14 @@ def _evidence_and_facts(
                     data_at=data_at,
                     period_start=str(source.get("period_start") or "").strip() or None,
                     period_end=str(source.get("period_end") or "").strip() or None,
-                    freshness=_freshness(
+                    market_status=data.get("market_status") if invocation.tool_name == "get_stock_quote" else None,
+                    quote_date=data.get("quote_date") if invocation.tool_name == "get_stock_quote" else None,
+                    freshness=data.get("freshness", "unknown") if invocation.tool_name == "get_stock_quote" else _freshness(
                         invocation.tool_name,
                         reference_time,
                         date_only=bool(data_at and re.fullmatch(r"\d{4}-\d{2}-\d{2}", data_at)),
                     ),
-                    freshness_basis=freshness_basis,
+                    freshness_basis=data.get("freshness_basis", "unknown") if invocation.tool_name == "get_stock_quote" else freshness_basis,
                     symbol=str(arguments.get("symbol") or "").strip().upper() or None,
                     market=str(arguments.get("market") or "").strip().upper() or None,
                 )
@@ -223,9 +245,20 @@ def _evidence_and_facts(
                         "This historical record did not preserve field-level tool data; only the original tool summary can be restored.",
                     )
                 )
+        elif tool_name == "check_watch_request":
+            fact_text = summary
+            gaps = [UNSUPPORTED_LABELS.get(key, (key, key))[language == "en-US"] for key in data.get("unsupported_conditions", [])]
+            if gaps:
+                missing_data.append(_localized(language, "该请求包含尚未实现的条件：" + "、".join(gaps) + "；能力检查通过不代表提醒已创建。", "This request needs unsupported conditions: " + ", ".join(gaps) + ". A completed capability check does not mean an alert was created."))
+            if "referenced_request_missing" in data.get("requires_clarification", []):
+                missing_data.append(_localized(language, "尚未定位重试所指的用户请求，不能判断原条件是否支持；需明确标的和条件。", "The retry's original user request could not be resolved; its conditions cannot be assessed until clarified."))
         elif tool_name == "get_stock_quote":
             price = _number(data.get("current_price"))
-            change_pct = _number(data.get("change_pct"))
+            change_pct = _number(data.get("change_pct")) if data.get("is_realtime") else None
+            if data.get("freshness") != "fresh":
+                missing_data.append(_localized(language, f"{target} 报价时效为 {data.get('freshness', 'unknown')}，数据时点 {data.get('source_timestamp') or data.get('quote_date') or '未知'}，不能视为当前实时行情。", f"{target} quote freshness is {data.get('freshness', 'unknown')}; source time {data.get('source_timestamp') or data.get('quote_date') or 'unknown'}. It does not establish a current live price."))
+            if data.get("market_status") in {"closed", "pre_market", "after_hours", "break"}:
+                missing_data.append(_localized(language, f"{target} 的交易时段状态不证明该供应商快照是官方收盘价或最后成交价；本次未验证收盘已确认。", f"{target} session status does not establish that the provider snapshot is an official closing price or last trade; bar-close confirmation was not verified."))
             if price is None:
                 missing_data.append(
                     _localized(language, f"{target or '该标的'} 缺少最新价。", f"The latest price is missing for {target or 'the symbol'}."),
@@ -233,7 +266,7 @@ def _evidence_and_facts(
             else:
                 fact_text = _localized(
                     language,
-                    f"{target} 最新价为 {_display_number(price)}"
+                    f"{target} 来源报价为 {_display_number(price)}（{data.get('source_timestamp') or data.get('quote_date') or '时间未知'}）"
                     + (f"，涨跌幅为 {_display_number(change_pct)}%。" if change_pct is not None else "。"),
                     f"{target} last traded at {_display_number(price)}"
                     + (f", with a {_display_number(change_pct)}% change." if change_pct is not None else "."),
@@ -302,6 +335,10 @@ def _evidence_and_facts(
             )
             if not snapshot_date:
                 missing_data.append(_localized(language, "机会筛选结果缺少快照日期。", "The opportunity screening result lacks a snapshot date."))
+        elif tool_name == "get_portfolio":
+            fact_text = summary
+            if data.get("valuation_time") == "unknown":
+                missing_data.append(_localized(language, "持仓快照时间已记录；估值行情来源时间未知，应逐个标的核对。", "The portfolio snapshot time is recorded; valuation quote times are unknown and need instrument-level verification."))
         elif summary:
             fact_text = summary
 
@@ -565,6 +602,7 @@ async def build_assistant_result(
         ),
         facts=deterministic_facts,
         inferences=_clean_unique(list(composed.inferences if composed else []), limit=6),
+        judgments=deterministic.judgments,
         risks=_clean_unique(
             [*deterministic.risks, *(composed.risks if composed else [])],
             limit=6,
@@ -587,7 +625,7 @@ def build_deterministic_assistant_result(
         invocations,
         language,
     )
-    evidence = evidence[:20]
+    evidence = evidence[:60]
     retained_ids = {item.id for item in evidence}
     deterministic_facts = [
         AssistantFact(
@@ -597,12 +635,20 @@ def build_deterministic_assistant_result(
         for fact in deterministic_facts
         if any(item in retained_ids for item in fact.evidence_ids)
     ]
+    judgments = []
+    for invocation in invocations:
+        payload = getattr(invocation, "result_data", None) or {}
+        for step in payload.get("diagnosis_steps", []) if isinstance(payload, dict) else []:
+            ids = [e.id for e in evidence if any(e.id.startswith(f"ev_{call_id}_") for call_id in step.get("call_ids", []))]
+            judgments.append(AssistantJudgment(step_id=step["id"], title=step["title"], text=step["text"], status=step["status"], evidence_ids=ids))
+            if step["status"] == "completed" and not ids:
+                missing_data.append(_localized(language, f"诊断步骤 {step['title']} 未保留可核对依据。", f"Diagnosis step {step['title']} lacks verifiable evidence."))
     risks = list(deterministic_risks)
-    if any(item.freshness in {"stale", "unknown"} for item in evidence):
+    if any(item.needs_source_time_warning for item in evidence):
         warning = _localized(
             language,
-            "部分依据缺少可验证的数据时点或已经过期，请结合最新数据复核。",
-            "Some evidence has an unknown or stale data time; verify it against current data.",
+            SOURCE_TIME_WARNINGS["zh-CN"],
+            SOURCE_TIME_WARNINGS["en-US"],
         )
         if warning not in risks:
             risks.append(warning)
@@ -610,6 +656,7 @@ def build_deterministic_assistant_result(
         summary=_first_paragraph(answer),
         facts=deterministic_facts[:8],
         inferences=[],
+        judgments=judgments,
         risks=_clean_unique(risks, limit=6),
         missing_data=_clean_unique(missing_data, limit=6),
         evidence=evidence,

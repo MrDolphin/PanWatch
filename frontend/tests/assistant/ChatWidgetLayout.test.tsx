@@ -420,7 +420,7 @@ describe('ChatWidget layout', () => {
 
     await user.click(screen.getAllByRole('button', { name: '本次允许' })[0])
 
-    await screen.findByText('已允许，已执行')
+    await screen.findByText('已允许')
     expect(screen.getAllByRole('button', { name: '本次允许' })).toHaveLength(1)
     expect(chatApi.decideAssistantApprovalStream).toHaveBeenCalledWith(
       'approval-1',
@@ -428,6 +428,7 @@ describe('ChatWidget layout', () => {
       expect.any(Object),
       42,
       expect.any(AbortSignal),
+      0,
     )
   })
 })
