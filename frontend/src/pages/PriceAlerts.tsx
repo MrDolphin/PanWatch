@@ -227,24 +227,13 @@ export default function PriceAlertsPage() {
       cooldown_minutes: r.cooldown_minutes ?? 30,
       max_triggers_per_day: r.max_triggers_per_day ?? 3,
       repeat_mode: (r.repeat_mode || 'repeat') as any,
-      expire_at: r.expire_at ? r.expire_at.slice(0, 16) : '',
+      expire_at: r.expire_at || '',
       notify_channel_ids: r.notify_channel_ids || [],
     })
     setFormOpen(true)
   }
 
-  const submitForm = async (payloadInput?: PriceAlertSubmitPayload) => {
-    const payload = payloadInput || {
-      stock_id: form.stock_id,
-      name: form.name.trim(),
-      condition_group: { op: form.op, items: form.items },
-      market_hours_mode: form.market_hours_mode,
-      cooldown_minutes: Number(form.cooldown_minutes || 0),
-      max_triggers_per_day: Number(form.max_triggers_per_day || 0),
-      repeat_mode: form.repeat_mode,
-      expire_at: form.expire_at ? new Date(form.expire_at).toISOString() : null,
-      notify_channel_ids: form.notify_channel_ids || [],
-    }
+  const submitForm = async (payload: PriceAlertSubmitPayload) => {
     if (!payload.stock_id) {
       toast(alertT('messages.selectStock'), 'error')
       return
